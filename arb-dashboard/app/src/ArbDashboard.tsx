@@ -129,12 +129,28 @@ export default function ArbDashboard() {
   const liveAlerts = useMemo(() => {
     return alerts.slice(-150).reverse().map(a => {
       const cat = a.category ?? "";
+      const raw = a.message ?? "";
       const isWin = cat.includes("converge");
       const isLoss = cat.includes("adverse");
       const isFill = cat.includes("fill");
       const isDiv = cat.includes("divergence");
       const color = isWin ? "#2B8A3E" : isLoss ? "#D92525" : isFill ? "#FF4D00" : isDiv ? "#D97706" : undefined;
-      return { time: formatTime(a.timestamp), message: a.message ?? "", color, severity: a.severity };
+
+      let message = raw;
+      const windowOpenMatch = raw.match(/^(\w+)\s+window opened:\s*(.*)$/i);
+      const windowCloseMatch = raw.match(/^(\w+)\s+window closed:\s*(.*)$/i);
+      if (windowOpenMatch) {
+        message = `${windowOpenMatch[1]} 🎬 · ${windowOpenMatch[2]}`;
+      } else if (windowCloseMatch) {
+        message = `${windowCloseMatch[1]} 🧤 · ${windowCloseMatch[2]}`;
+      } else {
+        message = raw
+          .replace(/\bwindow opened\b/gi, "🎬")
+          .replace(/\bwindow closed\b/gi, "🧤")
+          .replace(/:\s*/g, " · ");
+      }
+
+      return { time: formatTime(a.timestamp), message, color, severity: a.severity };
     });
   }, [alerts]);
 
