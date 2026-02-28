@@ -75,6 +75,12 @@ export default function ArbDashboard() {
   const [isDark] = useState(true);
   const [soundOpen, setSoundOpen] = useState(false);
   const [perfView, setPerfView] = useState<"cumulative" | "scatter">("cumulative");
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const { data: status } = useStatus();
   const { data: alertData } = useAlerts();
   const { data: tradesData } = useTrades();
@@ -201,25 +207,26 @@ export default function ArbDashboard() {
   };
 
   return (
-    <div style={{ backgroundColor: bgChassis, color: inkPrimary, fontFamily: "'Inter', sans-serif", height: "100vh", overflow: "hidden", display: "flex", justifyContent: "center", alignItems: "center", WebkitFontSmoothing: "antialiased" }}>
-      <div style={{ width: "100%", height: "100%", maxWidth: "1840px", maxHeight: "1150px", display: "grid", gridTemplateRows: "auto 1fr", gap: "8px", padding: "16px" }}>
+    <div style={{ backgroundColor: bgChassis, color: inkPrimary, fontFamily: "'Inter', sans-serif", height: "100vh", overflow: isMobile ? "auto" : "hidden", display: "flex", justifyContent: "center", alignItems: isMobile ? "flex-start" : "center", WebkitFontSmoothing: "antialiased" }}>
+      <div style={{ width: "100%", height: isMobile ? "auto" : "100%", minHeight: isMobile ? "100vh" : undefined, maxWidth: isMobile ? undefined : "1840px", maxHeight: isMobile ? undefined : "1150px", display: "grid", gridTemplateRows: isMobile ? "auto auto" : "auto 1fr", gap: "8px", padding: isMobile ? "8px" : "16px" }}>
         {/* Top Nav */}
-        <header style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "12px", padding: "8px 16px", height: "64px", boxShadow: shadowElevation }}>
+        <header style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr auto" : "auto 1fr auto", alignItems: "center", background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "12px", padding: "8px 16px", height: "64px", boxShadow: shadowElevation }}>
           <div style={{ fontFamily: mono, fontWeight: 700, fontSize: "14px", letterSpacing: "-0.5px", display: "flex", alignItems: "center", gap: "6px" }}>
             MONODEXR ARB <span style={{ fontWeight: 400, fontSize: "10px", color: inkTertiary }}>0.0.1</span>
           </div>
-          <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
+          {!isMobile && <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "10px", fontWeight: 600, textTransform: "uppercase", color: inkSecondary, background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: "4px" }}>
               <StatusDot style={healthy ? {} : { background: "#D92525" }} />
               {healthy ? "ONLINE" : "OFFLINE"}
             </div>
-          </div>
+          </div>}
           <div style={{ display: "flex", alignItems: "center", gap: "8px", position: "relative" }}>
             <button onClick={() => setSoundOpen(p => !p)} style={{ width: "32px", height: "32px", border: `1px solid ${sound.globalMuted ? "#FFC700" : borderStrong}`, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: sound.globalMuted ? "#FFC700" : inkSecondary, background: "linear-gradient(145deg, #222226, #18181C)" }}>
               <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24"><path d="M7 9v6h4l5 5V4l-5 5H7z" /></svg>
             </button>
+            {soundOpen && isMobile && <div onClick={() => setSoundOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 199 }} />}
             {soundOpen && (
-              <div style={{ position: "absolute", top: "44px", right: 0, width: "260px", background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "10px", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", padding: "14px", zIndex: 100 }}>
+              <div style={isMobile ? { position: "fixed", bottom: 0, left: 0, right: 0, background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "12px 12px 0 0", boxShadow: "0 -8px 24px rgba(0,0,0,0.3)", padding: "16px", zIndex: 200, maxHeight: "70vh", overflowY: "auto" } : { position: "absolute", top: "44px", right: 0, width: "260px", background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "10px", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", padding: "14px", zIndex: 100 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "12px" }}>
                   <span style={{ fontFamily: mono, fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: inkPrimary }}>Sound Effects</span>
                   <button onClick={() => sound.globalMuted ? sound.toggleGlobalMute() : sound.muteAll()} style={{ fontFamily: mono, fontSize: "9px", color: inkTertiary, textTransform: "uppercase", background: "none", border: "none", cursor: "pointer" }}>
@@ -242,10 +249,10 @@ export default function ArbDashboard() {
         </header>
 
         {/* Dashboard Grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 320px", gap: "8px", height: "100%", overflow: "hidden" }}>
+        <div style={{ display: isMobile ? "flex" : "grid", flexDirection: isMobile ? "column" : undefined, gridTemplateColumns: isMobile ? undefined : "280px 1fr 320px", gap: "8px", height: isMobile ? "auto" : "100%", overflow: isMobile ? "visible" : "hidden" }}>
 
           {/* Left: Event Log */}
-          <aside style={{ ...panelStyle, gap: "8px", minHeight: 0 }}>
+          <aside style={{ ...panelStyle, gap: "8px", minHeight: 0, order: isMobile ? 2 : undefined, maxHeight: isMobile ? "300px" : undefined }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: "8px", borderBottom: `1px solid ${borderCol}`, flexShrink: 0 }}>
               <span style={labelStyle}>Event Log</span>
               <span style={labelStyle}>LIVE</span>
@@ -262,16 +269,16 @@ export default function ArbDashboard() {
           </aside>
 
           {/* Center */}
-          <main style={{ display: "flex", flexDirection: "column", gap: "8px", overflow: "hidden" }}>
+          <main style={{ display: "flex", flexDirection: "column", gap: "8px", overflow: isMobile ? "visible" : "hidden", order: isMobile ? 1 : undefined }}>
             {/* Scoreboard */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr 1px 1.2fr", background: scoreboardBg, color: "#F2F2F3", height: "100px", borderRadius: "12px", overflow: "hidden", border: `1px solid ${borderCol}`, boxShadow: shadowElevation }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1px 1fr 1px 1.2fr", background: scoreboardBg, color: "#F2F2F3", minHeight: isMobile ? undefined : "100px", borderRadius: "12px", overflow: "hidden", border: `1px solid ${borderCol}`, boxShadow: shadowElevation }}>
               {/* Balance */}
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "10px 16px", gap: "4px" }}>
                 <span style={{ ...labelStyle, color: "rgba(128,128,140,0.7)" }}>Balance</span>
                 <span style={{ fontFamily: mono, fontSize: "22px", fontWeight: 400, lineHeight: 1, letterSpacing: "-0.5px" }}>{formatUsd(balance)}</span>
                 <span style={{ fontFamily: mono, fontSize: "9px", color: "rgba(255,255,255,0.35)" }}>seed: {formatUsd(seed)}</span>
               </div>
-              <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />
+              {!isMobile && <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />}
               {/* Trades */}
               <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", gap: "3px", justifyContent: "center" }}>
                 <span style={{ ...labelStyle, color: "rgba(128,128,140,0.7)" }}>Trades</span>
@@ -288,7 +295,7 @@ export default function ArbDashboard() {
                   ))}
                 </div>
               </div>
-              <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />
+              {!isMobile && <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />}
               {/* Edge Status */}
               <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", gap: "5px", justifyContent: "center" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -383,7 +390,7 @@ export default function ArbDashboard() {
           </main>
 
           {/* Right Column */}
-          <aside style={{ display: "flex", flexDirection: "column", gap: "8px", minHeight: 0, overflow: "hidden" }}>
+          <aside style={{ display: "flex", flexDirection: "column", gap: "8px", minHeight: 0, overflow: isMobile ? "visible" : "hidden", order: isMobile ? 3 : undefined }}>
             {/* Session Data */}
             <div style={{ ...panelStyle, gap: 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: "10px", marginBottom: "12px", borderBottom: `1px solid ${borderCol}` }}>
