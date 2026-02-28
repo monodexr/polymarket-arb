@@ -52,6 +52,7 @@ pub struct Signal {
 pub struct OpenDivergence {
     opened_at: Instant,
     peak_edge: f64,
+    signaled: bool,
 }
 
 pub fn evaluate(
@@ -98,7 +99,6 @@ pub fn evaluate(
             continue;
         }
 
-        // M1: Complementary pricing check — YES + NO should be close to 1.0
         let pair_sum = yes_mid + no_mid;
         if pair_sum > 0.0 && (pair_sum < 0.85 || pair_sum > 1.15) {
             debug!(
@@ -133,11 +133,21 @@ pub fn evaluate(
             continue;
         }
 
+        // Track divergence — only emit Signal on FIRST detection (not every tick)
+        let is_new = !open_divs.contains_key(&window.slug);
         let div = open_divs.entry(window.slug.clone()).or_insert_with(|| OpenDivergence {
             opened_at: Instant::now(),
             peak_edge: 0.0,
+            signaled: false,
         });
         div.peak_edge = div.peak_edge.max(edge);
+
+        if div.signaled {
+            // Divergence already signaled — just update peak edge, don't spam
+            continue;
+        }
+
+        div.signaled = true;
 
         info!(
             event = "DIVERGENCE",
@@ -151,7 +161,6 @@ pub fn evaluate(
             time_remaining = %format!("{:.0}s", window.time_remaining()),
         );
 
-        // size_usd is set to 0.0 here — caller (run_asset_loop) sizes via RiskManager
         events.push(DivEvent::Signal(Signal {
             market_name: window.slug.clone(),
             asset: window.asset.clone(),
