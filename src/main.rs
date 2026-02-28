@@ -50,6 +50,9 @@ async fn main() -> Result<()> {
         info!("DRY RUN — signals will be logged but no orders placed");
     }
 
+    let seed_usd = cfg.strategy.seed_usd;
+    info!(seed_usd = %format!("${:.2}", seed_usd), "PnL tracking seed configured");
+
     let (price_tx, price_rx) = watch::channel(PriceState::default());
     let (event_tx, event_rx) = mpsc::channel::<DivEvent>(256);
 
@@ -57,8 +60,8 @@ async fn main() -> Result<()> {
 
     let (book_rx, token_sub_tx) = markets::book::spawn();
 
-    // M3: Shared window state for the status writer
     let window_states: SharedWindowStates = Arc::new(Mutex::new(Vec::new()));
+    let live_stats = data::new_shared_live_stats();
 
     for asset in &cfg.discovery.assets {
         let asset = asset.clone();
@@ -79,12 +82,14 @@ async fn main() -> Result<()> {
     if cli.dry_run {
         logging::spawn_dry_run_logger(event_rx);
     } else {
-        executor::spawn(event_rx, cfg.clone()).await?;
+        executor::spawn(event_rx, cfg.clone(), live_stats.clone()).await?;
     }
 
-    // Status writer task (M3: includes window state from shared vec)
+    // Status writer task
     let status_price_rx = price_rx.clone();
     let status_windows = window_states.clone();
+    let status_live = live_stats.clone();
+    let status_cfg = cfg.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -94,8 +99,30 @@ async fn main() -> Result<()> {
                 let guard = status_windows.lock().unwrap();
                 guard.clone()
             };
+
+            let (balance, trade_stats) = {
+                let stats = status_live.lock().unwrap();
+                let seed = status_cfg.strategy.seed_usd;
+                let bal = stats.balance;
+                let ts = data::TradeStats {
+                    wins: stats.wins,
+                    losses: stats.losses,
+                    open: stats.open,
+                    total_pnl: if seed > 0.0 && bal > 0.0 { bal - seed } else { stats.total_pnl },
+                    session_pnl: if stats.session_start_balance > 0.0 {
+                        bal - stats.session_start_balance
+                    } else {
+                        stats.session_pnl
+                    },
+                    daily_pnl: stats.daily_pnl,
+                };
+                (bal, ts)
+            };
+
             let status = data::Status {
                 timestamp: discovery::now_secs(),
+                balance,
+                seed: status_cfg.strategy.seed_usd,
                 spot_price: btc_price,
                 spot_source: "binance",
                 current_windows: windows,
@@ -104,8 +131,8 @@ async fn main() -> Result<()> {
                     binance_price: btc_price,
                     binance_latency_ms: 0,
                 },
-                trades: data::TradeStats::default(),
-                recent_trades: vec![],
+                trades: trade_stats,
+                recent_trades: load_recent_trades(50),
             };
             data::write_status(&status);
         }
@@ -114,6 +141,21 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     info!("shutting down");
     Ok(())
+}
+
+fn load_recent_trades(n: usize) -> Vec<serde_json::Value> {
+    let path = std::path::Path::new("data/trades.jsonl");
+    if !path.exists() {
+        return vec![];
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    lines.iter().rev().take(n).filter_map(|line| {
+        serde_json::from_str(line).ok()
+    }).collect()
 }
 
 async fn run_asset_loop(
@@ -128,7 +170,6 @@ async fn run_asset_loop(
     let dur = cfg.discovery.window_duration_secs;
     let pre_discover = cfg.discovery.pre_discover_secs;
 
-    // H2 + M2: Instantiate RiskManager for this asset
     let mut risk = RiskManager::new(&cfg);
 
     info!(asset = %asset, "asset lifecycle started");
@@ -146,7 +187,6 @@ async fn run_asset_loop(
 
         let sleep_secs = (discover_at - now).max(0.0);
         if sleep_secs > 0.0 {
-            // Clear this asset's window from shared state while idle
             update_window_state(&window_states, &asset, None);
 
             info!(
@@ -168,15 +208,12 @@ async fn run_asset_loop(
             }
         };
 
-        // Subscribe CLOB WS to this window's tokens
         let tokens = vec![window.yes_token.clone(), window.no_token.clone()];
         if token_sub_tx.send(tokens).await.is_err() {
             error!(asset = %asset, "token subscription channel closed");
             break;
         }
 
-        // H1: Wait for book data before the window opens
-        // The CLOB WS needs time to connect and send the first book snapshot.
         let book_wait_deadline = discovery::now_secs() + 10.0;
         loop {
             let has_data = {
@@ -193,7 +230,6 @@ async fn run_asset_loop(
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
-        // Wait for window to actually open
         let wait_for_open = (window.open_time - discovery::now_secs()).max(0.0);
         if wait_for_open > 0.0 {
             tokio::time::sleep(std::time::Duration::from_secs_f64(wait_for_open)).await;
@@ -249,13 +285,12 @@ async fn run_asset_loop(
                 &windows, spot, &books, &cfg.strategy, &mut window_div_state,
             );
 
-            // Size signals via RiskManager, drop signals that can't trade
             let events: Vec<DivEvent> = events
                 .into_iter()
                 .filter_map(|ev| match ev {
                     DivEvent::Signal(mut sig) => {
                         if !risk.can_trade() {
-                            return None; // drop signal entirely
+                            return None;
                         }
                         sig.size_usd = risk.position_size(sig.edge, sig.price);
                         risk.record_fill(sig.size_usd);
@@ -265,7 +300,6 @@ async fn run_asset_loop(
                 })
                 .collect();
 
-            // M3: Update shared window state for status writer
             let fv_yes = fair_value::fair_yes(spot, window.open_price, window.time_remaining_frac());
             let yes_mid = books.get(&window.yes_token).map(|b| b.mid).unwrap_or(0.0);
             let no_mid = books.get(&window.no_token).map(|b| b.mid).unwrap_or(0.0);
@@ -292,7 +326,6 @@ async fn run_asset_loop(
             }
         }
 
-        // Window ended
         let move_pct = (price_rx.borrow().spot_price(&asset) - open_price) / open_price;
         info!(
             asset = %asset,
@@ -308,12 +341,10 @@ async fn run_asset_loop(
                 "move_pct": move_pct * 100.0,
             }));
 
-        // Clear this asset's window state
         update_window_state(&window_states, &asset, None);
     }
 }
 
-/// Update or remove this asset's window status in the shared state.
 fn update_window_state(
     states: &SharedWindowStates,
     asset: &str,
