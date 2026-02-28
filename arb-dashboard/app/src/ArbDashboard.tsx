@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStatus, useAlerts, useTrades } from "./hooks/useApi";
 import { useSoundSettings } from "./hooks/useSoundSettings";
 import { useTick } from "./hooks/useTick";
-import { formatUsd, formatTime, formatEdge, formatPrice, formatDuration } from "./lib/utils";
+import { formatUsd, formatTime, formatEdge, formatPrice } from "./lib/utils";
 import type { ArbMarket, ArbTrade, Alert } from "./lib/types";
 
 const StatusDot = ({ style: extraStyle }: { style?: React.CSSProperties }) => {
@@ -14,56 +14,110 @@ const StatusDot = ({ style: extraStyle }: { style?: React.CSSProperties }) => {
   return <div style={{ width: "8px", height: "8px", background: "#2B8A3E", borderRadius: "50%", opacity, transition: "opacity 0.5s", ...extraStyle }} />;
 };
 
-function ContractCard({ market, now, isDark }: { market: ArbMarket; now: number; isDark: boolean }) {
+const ASSET_COLORS: Record<string, string> = { btc: "#F7931A", eth: "#627EEA", sol: "#9945FF", xrp: "#23292F" };
+
+function ContractCard({ market, raw, now, isDark }: { market: ArbMarket; raw: any; now: number; isDark: boolean }) {
   const mono = "'JetBrains Mono', monospace";
   const st = market.state;
-  const borderColor = st === "divergence" ? "#D97706" : st === "executing" ? "#D92525" : st === "filled" ? "#2B8A3E" : st === "converged" ? "#2B8A3E" : isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.08)";
-  const bgTint = st === "divergence" ? "rgba(217,119,6,0.03)" : st === "executing" ? "rgba(217,37,37,0.04)" : st === "filled" ? "rgba(43,138,62,0.03)" : "transparent";
+  const asset = (raw?.asset ?? "").toUpperCase();
+  const assetColor = ASSET_COLORS[(raw?.asset ?? "").toLowerCase()] ?? "#666677";
+  const borderColor = st === "divergence" ? "#D97706" : st === "executing" ? "#D92525" : st === "filled" ? "#2B8A3E" : st === "converged" ? "#2B8A3E" : "rgba(255,255,255,0.07)";
+  const bgTint = st === "divergence" ? "rgba(217,119,6,0.04)" : st === "executing" ? "rgba(217,37,37,0.05)" : st === "filled" ? "rgba(43,138,62,0.04)" : "transparent";
   const glowAnim = st === "divergence" ? "pulse-glow 2s ease-in-out infinite" : st === "executing" ? "pulse-red 1.2s ease-in-out infinite" : st === "filled" ? "pulse-green 2s ease-in-out infinite" : st === "converged" ? "flash-green 1s ease-out" : "none";
-  const edgeColor = (market.edge_pct ?? 0) > 0.3 ? "#2B8A3E" : isDark ? "#666677" : "#888888";
-  const divDuration = market.divergence_open && market.divergence_since ? Math.max(0, now / 1000 - market.divergence_since) : 0;
-  const barPct = Math.min(100, (divDuration / 10) * 100);
-  const barColor = divDuration > 10 ? "#D97706" : "#2B8A3E";
-  const inkDim = isDark ? "#666677" : "#888888";
-  const inkPrimary = isDark ? "#F0F0F2" : "#111111";
+  const inkDim = "#666677";
+  const inkPrimary = "#F0F0F2";
+
+  const openPrice = raw?.open_price ?? 0;
+  const movePct = raw?.current_move_pct ?? 0;
+  const timeLeft = raw?.time_remaining_sec ?? 0;
+  const windowDur = 300;
+  const timerPct = timeLeft > 0 ? Math.min(100, ((windowDur - timeLeft) / windowDur) * 100) : 0;
+  const timerMin = Math.floor(timeLeft / 60);
+  const timerSec = Math.round(timeLeft % 60);
+  const fairYes = raw?.fair_yes ?? market.fair_value ?? 0;
+  const fairNo = raw?.fair_no ?? (1 - fairYes);
+  const clobYes = raw?.clob_yes_mid ?? market.clob_mid ?? 0;
+  const clobNo = raw?.clob_no_mid ?? 0;
+  const edgeYes = raw?.edge_yes ?? 0;
+  const edgeNo = raw?.edge_no ?? 0;
+  const bestEdge = Math.max(Math.abs(edgeYes), Math.abs(edgeNo));
+  const bestEdgeColor = bestEdge > 0.02 ? "#2B8A3E" : bestEdge > 0.005 ? "#D97706" : inkDim;
+  const moveColor = movePct > 0 ? "#2B8A3E" : movePct < 0 ? "#D92525" : inkDim;
+  const stateLabel = st === "monitoring" ? "MONITORING" : st.toUpperCase();
+  const stateBg = st === "divergence" ? "#D97706" : st === "executing" ? "#D92525" : st === "filled" ? "#2B8A3E" : "rgba(255,255,255,0.08)";
+  const stateFg = st === "divergence" || st === "executing" || st === "filled" ? "#000" : inkDim;
 
   return (
     <div style={{
       border: `1.5px solid ${borderColor}`,
-      borderRadius: "8px",
-      padding: "10px 12px",
+      borderRadius: "10px",
+      padding: "14px 16px",
       display: "flex",
       flexDirection: "column",
-      gap: "6px",
+      gap: "10px",
       background: bgTint,
       animation: glowAnim,
       transition: "border-color 0.3s, background 0.3s",
     }}>
-      <div style={{ fontFamily: mono, fontSize: "11px", fontWeight: 700, color: inkPrimary, lineHeight: 1.2 }}>
-        {market.title ?? "Unknown Market"}
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: "10px" }}>
-        <span style={{ color: inkDim }}>fair: <span style={{ color: inkPrimary, fontWeight: 600 }}>{(market.fair_value ?? 0).toFixed(2)}</span></span>
-        <span style={{ color: inkDim }}>CLOB: <span style={{ color: inkPrimary, fontWeight: 600 }}>{(market.clob_mid ?? 0).toFixed(2)}</span></span>
-      </div>
+      {/* Header: Asset + State */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontFamily: mono, fontSize: "10px", fontWeight: 700, color: edgeColor }}>
-          edge: {formatEdge(market.edge_pct ?? 0)}
-          {(market.edge_pct ?? 0) > 0.3 && <span style={{ marginLeft: "4px", display: "inline-block", width: "5px", height: "5px", borderRadius: "50%", background: edgeColor, animation: st === "executing" ? "flash-chip 0.8s infinite" : undefined }} />}
-        </span>
-        {st !== "scanning" && (
-          <span style={{ fontFamily: mono, fontSize: "8px", fontWeight: 600, color: borderColor, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            {st}
-          </span>
-        )}
-      </div>
-      {market.divergence_open && (
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <div style={{ flex: 1, height: "3px", background: isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)", borderRadius: "2px", overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${barPct}%`, background: barColor, borderRadius: "2px", transition: "width 1s linear" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ width: "6px", height: "24px", borderRadius: "3px", background: assetColor }} />
+          <div>
+            <div style={{ fontFamily: mono, fontSize: "16px", fontWeight: 700, color: inkPrimary, letterSpacing: "-0.5px" }}>{asset || "?"}</div>
+            <div style={{ fontFamily: mono, fontSize: "8px", color: inkDim, marginTop: "-1px", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {raw?.slug ?? market.title ?? "—"}
+            </div>
           </div>
-          <span style={{ fontFamily: mono, fontSize: "8px", color: inkDim, minWidth: "28px", textAlign: "right" }}>
-            {divDuration.toFixed(1)}s
+        </div>
+        <div style={{ fontFamily: mono, fontSize: "8px", fontWeight: 700, padding: "2px 8px", borderRadius: "3px", background: stateBg, color: stateFg, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          {stateLabel}
+        </div>
+      </div>
+
+      {/* Price + Move */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontFamily: mono }}>
+        <span style={{ fontSize: "10px", color: inkDim }}>open: <span style={{ color: inkPrimary, fontWeight: 600 }}>{openPrice > 0 ? formatPrice(openPrice) : "—"}</span></span>
+        <span style={{ fontSize: "12px", fontWeight: 700, color: moveColor }}>
+          {movePct > 0 ? "+" : ""}{movePct.toFixed(3)}%
+        </span>
+      </div>
+
+      {/* YES / NO comparison */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+        {[
+          { label: "YES", fair: fairYes, clob: clobYes, edge: edgeYes },
+          { label: "NO", fair: fairNo, clob: clobNo, edge: edgeNo },
+        ].map(side => {
+          const eColor = Math.abs(side.edge) > 0.02 ? "#2B8A3E" : Math.abs(side.edge) > 0.005 ? "#D97706" : inkDim;
+          return (
+            <div key={side.label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: "6px", padding: "8px 10px" }}>
+              <div style={{ fontFamily: mono, fontSize: "8px", fontWeight: 600, color: inkDim, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>{side.label}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: "10px", marginBottom: "2px" }}>
+                <span style={{ color: inkDim }}>fair</span>
+                <span style={{ color: inkPrimary, fontWeight: 600 }}>{side.fair.toFixed(3)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: "10px", marginBottom: "2px" }}>
+                <span style={{ color: inkDim }}>clob</span>
+                <span style={{ color: inkPrimary, fontWeight: 600 }}>{side.clob.toFixed(3)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: "10px" }}>
+                <span style={{ color: inkDim }}>edge</span>
+                <span style={{ color: eColor, fontWeight: 700 }}>${Math.abs(side.edge).toFixed(3)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Window timer */}
+      {timeLeft > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ flex: 1, height: "4px", background: "rgba(255,255,255,0.08)", borderRadius: "2px", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${timerPct}%`, background: timeLeft < 30 ? "#D92525" : timeLeft < 60 ? "#D97706" : "#2B8A3E", borderRadius: "2px", transition: "width 1s linear" }} />
+          </div>
+          <span style={{ fontFamily: mono, fontSize: "10px", fontWeight: 600, color: timeLeft < 30 ? "#D92525" : timeLeft < 60 ? "#D97706" : inkDim, minWidth: "36px", textAlign: "right" }}>
+            {timerMin}:{timerSec.toString().padStart(2, "0")}
           </span>
         </div>
       )}
@@ -95,9 +149,9 @@ export default function ArbDashboard() {
   const balance = status?.balance ?? 0;
   const seed = status?.seed ?? 0;
   const trades = status?.trades ?? { wins: 0, losses: 0, open: 0, total_pnl: 0, session_pnl: 0, daily_pnl: 0, avg_edge: 0, avg_latency_ms: 0 };
+  const rawWindows: any[] = useMemo(() => status?.markets ?? (status as any)?.current_windows ?? [], [status]);
   const markets: ArbMarket[] = useMemo(() => {
-    const raw: any[] = status?.markets ?? (status as any)?.current_windows ?? [];
-    return raw.map((w: any) => ({
+    return rawWindows.map((w: any) => ({
       title: w.title ?? w.slug ?? `${(w.asset ?? "?").toUpperCase()}`,
       condition_id: w.condition_id ?? w.slug ?? "",
       fair_value: w.fair_value ?? w.fair_yes ?? 0,
@@ -109,7 +163,7 @@ export default function ArbDashboard() {
       divergence_since: w.divergence_since ?? null,
       state: w.state ?? "scanning",
     }));
-  }, [status]);
+  }, [rawWindows]);
   const rawFeeds = (status as any)?.feeds ?? {};
   const feedsConnected = rawFeeds.binance_connected !== undefined
     ? (rawFeeds.binance_connected ? 1 : 0)
@@ -129,18 +183,33 @@ export default function ArbDashboard() {
   const edgeColor = edgeState === "EXECUTING" ? "#D92525" : edgeState === "DIVERGENCE" ? "#D97706" : edgeState === "FILLED" ? "#2B8A3E" : "#2B8A3E";
   const edgePulse = edgeState === "EXECUTING" || edgeState === "DIVERGENCE";
 
-  const sortedMarkets = useMemo(() => {
-    const order: Record<string, number> = { executing: 0, divergence: 1, filled: 2, converged: 3, scanning: 4 };
-    return [...markets].filter(m => m != null).sort((a, b) => {
-      const oa = order[a?.state] ?? 5;
-      const ob = order[b?.state] ?? 5;
+  const sortedIndices = useMemo(() => {
+    const order: Record<string, number> = { executing: 0, divergence: 1, filled: 2, converged: 3, monitoring: 4, scanning: 5 };
+    const indices = markets.map((_, i) => i).filter(i => markets[i] != null);
+    indices.sort((ai, bi) => {
+      const a = markets[ai]; const b = markets[bi];
+      const oa = order[a?.state] ?? 6;
+      const ob = order[b?.state] ?? 6;
       if (oa !== ob) return oa - ob;
       if (a?.state === "divergence" && b?.state === "divergence") return (b?.edge_pct ?? 0) - (a?.edge_pct ?? 0);
       return (a?.title ?? "").localeCompare(b?.title ?? "");
     });
+    return indices;
   }, [markets]);
 
   const liveAlerts = useMemo(() => {
+    const fmtSlug = (slug: string): string => {
+      const m = slug.match(/(\d+)m-(\d{9,})$/);
+      if (!m) return slug;
+      const durMin = parseInt(m[1]);
+      const startTs = parseInt(m[2]);
+      if (isNaN(startTs)) return slug;
+      const s = new Date(startTs * 1000);
+      const e = new Date((startTs + durMin * 60) * 1000);
+      const tf = (d: Date) => d.toLocaleTimeString("en-US", { hour12: false, hour: "numeric", minute: "2-digit" });
+      return `${durMin}m • ${tf(s)}–${tf(e)}`;
+    };
+
     return alerts.slice(-150).reverse().map(a => {
       const cat = a.category ?? "";
       const raw = a.message ?? "";
@@ -154,7 +223,13 @@ export default function ArbDashboard() {
       const windowOpenMatch = raw.match(/^(\w+)\s+window opened:\s*(.*)$/i);
       const windowCloseMatch = raw.match(/^(\w+)\s+window closed:\s*(.*)$/i);
       if (windowOpenMatch) {
-        message = `${windowOpenMatch[1]} 🎬 · ${windowOpenMatch[2]}`;
+        const rest = windowOpenMatch[2];
+        const slugPrice = rest.match(/^(\S+)\s*@\s*(.+)$/);
+        if (slugPrice) {
+          message = `${windowOpenMatch[1]} 🎬 · ${fmtSlug(slugPrice[1])} @ ${slugPrice[2].trim()}`;
+        } else {
+          message = `${windowOpenMatch[1]} 🎬 · ${rest}`;
+        }
       } else if (windowCloseMatch) {
         message = `${windowCloseMatch[1]} 🧤 · ${windowCloseMatch[2]}`;
       } else {
@@ -243,6 +318,7 @@ export default function ArbDashboard() {
         <header style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr auto" : "auto 1fr auto", alignItems: "center", background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "12px", padding: "8px 16px", height: "64px", boxShadow: shadowElevation }}>
           <div style={{ fontFamily: mono, fontWeight: 700, fontSize: "14px", letterSpacing: "-0.5px", display: "flex", alignItems: "center", gap: "6px" }}>
             MONODEXR ARB <span style={{ fontWeight: 400, fontSize: "10px", color: inkTertiary }}>0.0.1</span>
+            {isMobile && <StatusDot style={{ marginLeft: "4px", ...(healthy ? {} : { background: "#D92525" }) }} />}
           </div>
           {!isMobile && <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "10px", fontWeight: 600, textTransform: "uppercase", color: inkSecondary, background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: "4px" }}>
@@ -309,6 +385,7 @@ export default function ArbDashboard() {
                 <span style={{ fontFamily: mono, fontSize: "9px", color: "rgba(255,255,255,0.35)" }}>seed: {formatUsd(seed)}</span>
               </div>
               {!isMobile && <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />}
+              {isMobile && <div style={{ height: "1px", background: "rgba(255,255,255,0.08)", margin: "0 16px" }} />}
               {/* Trades */}
               <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", gap: "3px", justifyContent: "center" }}>
                 <span style={{ ...labelStyle, color: "rgba(128,128,140,0.7)" }}>Trades</span>
@@ -326,6 +403,7 @@ export default function ArbDashboard() {
                 </div>
               </div>
               {!isMobile && <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />}
+              {isMobile && <div style={{ height: "1px", background: "rgba(255,255,255,0.08)", margin: "0 16px" }} />}
               {/* Edge Status */}
               <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", gap: "5px", justifyContent: "center" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -345,14 +423,14 @@ export default function ArbDashboard() {
             </div>
 
             {/* Divergence Board */}
-            <div style={{ ...panelStyle, flex: sortedMarkets.length > 0 ? 1 : undefined, minHeight: sortedMarkets.length > 0 ? 0 : "120px", overflow: "auto" }}>
+            <div style={{ ...panelStyle, flex: sortedIndices.length > 0 ? 1 : undefined, minHeight: sortedIndices.length > 0 ? 0 : "120px", overflow: "auto" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: "8px", marginBottom: "10px", borderBottom: `1px solid ${borderCol}`, flexShrink: 0 }}>
                 <span style={labelStyle}>Divergence Board</span>
                 <span style={labelStyle}>{markets.length} Markets</span>
               </div>
-              {sortedMarkets.length > 0 ? (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "8px" }}>
-                  {sortedMarkets.map(m => <ContractCard key={m.condition_id || m.title} market={m} now={now} isDark={isDark} />)}
+              {sortedIndices.length > 0 ? (
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "10px" }}>
+                  {sortedIndices.map(i => <ContractCard key={markets[i].condition_id || markets[i].title} market={markets[i]} raw={rawWindows[i]} now={now} isDark={isDark} />)}
                 </div>
               ) : (
                 <div style={{ fontFamily: mono, fontSize: "11px", color: inkTertiary, textAlign: "center", padding: "20px 0" }}>{healthy ? "Scanning — waiting for next window" : "No markets monitored"}</div>
