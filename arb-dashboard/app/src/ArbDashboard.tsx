@@ -90,37 +90,33 @@ export default function ArbDashboard() {
   const seed = status?.seed ?? 0;
   const trades = status?.trades ?? { wins: 0, losses: 0, open: 0, total_pnl: 0, session_pnl: 0, daily_pnl: 0, avg_edge: 0, avg_latency_ms: 0 };
   const markets: ArbMarket[] = status?.markets ?? (status as any)?.current_windows ?? [];
-  const rawFeeds = status?.feeds ?? {};
-  const feedsConnected = useMemo(() => {
-    const f = rawFeeds as any;
-    if (f.binance_connected !== undefined) return f.binance_connected ? 1 : 0;
-    return Object.values(f).filter((v: any) => v?.connected).length;
-  }, [rawFeeds]);
-  const feedsTotal = useMemo(() => {
-    const f = rawFeeds as any;
-    if (f.binance_connected !== undefined) return 1;
-    return Object.keys(f).length;
-  }, [rawFeeds]);
+  const rawFeeds = (status as any)?.feeds ?? {};
+  const feedsConnected = rawFeeds.binance_connected !== undefined
+    ? (rawFeeds.binance_connected ? 1 : 0)
+    : Object.values(rawFeeds).filter((v: any) => v && typeof v === 'object' && v.connected).length;
+  const feedsTotal = rawFeeds.binance_connected !== undefined
+    ? 1
+    : Math.max(1, Object.keys(rawFeeds).filter(k => !k.includes('_')).length);
   const feedLatency = (rawFeeds as any)?.binance_latency_ms ?? (trades as any)?.avg_latency_ms ?? 0;
   const dailyCap = status?.daily_cap ?? { limit: 0, used_pct: 0 };
 
-  const edgeState = useMemo(() => {
-    if (markets.some(m => m.state === "executing")) return "EXECUTING";
-    if (markets.some(m => m.state === "divergence")) return "DIVERGENCE";
-    if (markets.some(m => m.state === "filled")) return "FILLED";
+  const edgeState = (() => {
+    if (markets.some(m => m?.state === "executing")) return "EXECUTING";
+    if (markets.some(m => m?.state === "divergence")) return "DIVERGENCE";
+    if (markets.some(m => m?.state === "filled")) return "FILLED";
     return "SCANNING";
-  }, [markets]);
+  })();
   const edgeColor = edgeState === "EXECUTING" ? "#D92525" : edgeState === "DIVERGENCE" ? "#D97706" : edgeState === "FILLED" ? "#2B8A3E" : "#2B8A3E";
   const edgePulse = edgeState === "EXECUTING" || edgeState === "DIVERGENCE";
 
   const sortedMarkets = useMemo(() => {
     const order: Record<string, number> = { executing: 0, divergence: 1, filled: 2, converged: 3, scanning: 4 };
-    return [...markets].sort((a, b) => {
-      const oa = order[a.state] ?? 5;
-      const ob = order[b.state] ?? 5;
+    return [...markets].filter(m => m != null).sort((a, b) => {
+      const oa = order[a?.state] ?? 5;
+      const ob = order[b?.state] ?? 5;
       if (oa !== ob) return oa - ob;
-      if (a.state === "divergence" && b.state === "divergence") return b.edge_pct - a.edge_pct;
-      return a.title.localeCompare(b.title);
+      if (a?.state === "divergence" && b?.state === "divergence") return (b?.edge_pct ?? 0) - (a?.edge_pct ?? 0);
+      return (a?.title ?? "").localeCompare(b?.title ?? "");
     });
   }, [markets]);
 
