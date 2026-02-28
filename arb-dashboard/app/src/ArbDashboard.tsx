@@ -95,7 +95,21 @@ export default function ArbDashboard() {
   const balance = status?.balance ?? 0;
   const seed = status?.seed ?? 0;
   const trades = status?.trades ?? { wins: 0, losses: 0, open: 0, total_pnl: 0, session_pnl: 0, daily_pnl: 0, avg_edge: 0, avg_latency_ms: 0 };
-  const markets: ArbMarket[] = status?.markets ?? (status as any)?.current_windows ?? [];
+  const markets: ArbMarket[] = useMemo(() => {
+    const raw: any[] = status?.markets ?? (status as any)?.current_windows ?? [];
+    return raw.map((w: any) => ({
+      title: w.title ?? w.slug ?? `${(w.asset ?? "?").toUpperCase()}`,
+      condition_id: w.condition_id ?? w.slug ?? "",
+      fair_value: w.fair_value ?? w.fair_yes ?? 0,
+      clob_mid: w.clob_mid ?? w.clob_yes_mid ?? 0,
+      clob_best_bid: w.clob_best_bid ?? 0,
+      clob_best_ask: w.clob_best_ask ?? 0,
+      edge_pct: w.edge_pct ?? (w.edge_yes != null ? w.edge_yes * 100 : 0),
+      divergence_open: w.divergence_open ?? false,
+      divergence_since: w.divergence_since ?? null,
+      state: w.state ?? "scanning",
+    }));
+  }, [status]);
   const rawFeeds = (status as any)?.feeds ?? {};
   const feedsConnected = rawFeeds.binance_connected !== undefined
     ? (rawFeeds.binance_connected ? 1 : 0)
@@ -341,7 +355,7 @@ export default function ArbDashboard() {
                   {sortedMarkets.map(m => <ContractCard key={m.condition_id || m.title} market={m} now={now} isDark={isDark} />)}
                 </div>
               ) : (
-                <div style={{ fontFamily: mono, fontSize: "11px", color: inkTertiary, textAlign: "center", padding: "20px 0" }}>No markets monitored</div>
+                <div style={{ fontFamily: mono, fontSize: "11px", color: inkTertiary, textAlign: "center", padding: "20px 0" }}>{healthy ? "Scanning — waiting for next window" : "No markets monitored"}</div>
               )}
             </div>
 
