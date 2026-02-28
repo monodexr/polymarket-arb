@@ -113,7 +113,8 @@ async fn query_balance(client: &AuthClient) -> Result<f64> {
     let result = client.balance_allowance(request).await
         .context("balance_allowance")?;
     use rust_decimal::prelude::ToPrimitive;
-    Ok(result.balance.to_f64().unwrap_or(0.0))
+    let micro_usdc = result.balance.to_f64().unwrap_or(0.0);
+    Ok(micro_usdc / 1_000_000.0)
 }
 
 async fn execute_signal<S: Signer + Send + Sync>(
