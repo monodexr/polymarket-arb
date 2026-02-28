@@ -119,6 +119,14 @@ async fn main() -> Result<()> {
                 (bal, ts)
             };
 
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let feed_latency = ps.prices.get("btc")
+                .map(|p| now_ms.saturating_sub(p.timestamp_ms))
+                .unwrap_or(0);
+
             let status = data::Status {
                 timestamp: discovery::now_secs(),
                 balance,
@@ -129,7 +137,7 @@ async fn main() -> Result<()> {
                 feeds: data::FeedStatus {
                     binance_connected: !ps.prices.is_empty(),
                     binance_price: btc_price,
-                    binance_latency_ms: 0,
+                    binance_latency_ms: feed_latency,
                 },
                 trades: trade_stats,
                 recent_trades: load_recent_trades(50),
