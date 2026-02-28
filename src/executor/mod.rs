@@ -49,6 +49,14 @@ pub async fn spawn(
 
     info!(proxy = %proxy_wallet, "CLOB authenticated with proxy wallet");
 
+    let refresh_req = BalanceAllowanceRequest::builder()
+        .asset_type(AssetType::Collateral)
+        .build();
+    match client.update_balance_allowance(refresh_req).await {
+        Ok(()) => info!("CLOB balance/allowance cache refreshed"),
+        Err(e) => warn!(%e, "failed to refresh CLOB balance/allowance cache"),
+    }
+
     let bal_client = client.clone();
     let bal_stats = live_stats.clone();
     tokio::spawn(async move {
