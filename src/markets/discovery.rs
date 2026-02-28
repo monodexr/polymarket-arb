@@ -87,8 +87,8 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
 
     let empty = vec![];
     let events = resp.as_array().unwrap_or(&empty);
+    info!(total_events = events.len(), "gamma API returned events");
 
-    // First pass: collect all candidates without fee checks
     let mut candidates: Vec<(Market, String)> = Vec::new();
 
     for event in events {
@@ -108,8 +108,11 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
 
         let slug = event.get("slug").and_then(|s| s.as_str()).unwrap_or("");
         if slug.contains("5-minute") || slug.contains("15-minute") {
+            info!(title, slug, "skipping short-term market");
             continue;
         }
+
+        info!(title, slug, "BTC event found, checking markets");
 
         let event_markets = match event.get("markets").and_then(|m| m.as_array()) {
             Some(m) => m,
@@ -145,10 +148,16 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
                     let raw = caps.get(1).unwrap().as_str().replace(',', "");
                     match raw.parse::<f64>() {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(_) => {
+                            info!(question, "could not parse strike number, skipping");
+                            continue;
+                        }
                     }
                 }
-                None => continue,
+                None => {
+                    info!(question, "no $ strike in title, skipping");
+                    continue;
+                }
             };
 
             let expiry_str = mkt

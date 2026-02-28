@@ -6,22 +6,30 @@ use tracing::{error, warn};
 
 use super::PriceTick;
 
-const URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+// Binance.com blocks US IPs (451). Use Binance US as primary, fall back to .com.
+const URL_US: &str = "wss://stream.binance.us:9443/ws/btcusdt@trade";
+const URL_GLOBAL: &str = "wss://stream.binance.com:9443/ws/btcusdt@trade";
 
 pub fn spawn(tx: mpsc::Sender<PriceTick>) {
     tokio::spawn(async move {
         loop {
-            match run(&tx).await {
-                Ok(()) => warn!("binance WS closed, reconnecting"),
-                Err(e) => error!(%e, "binance WS error, reconnecting in 1s"),
+            // Try Binance US first (works from US IPs), then global
+            for url in [URL_US, URL_GLOBAL] {
+                match run(&tx, url).await {
+                    Ok(()) => warn!(url, "binance WS closed, trying next"),
+                    Err(e) => {
+                        error!(url, %e, "binance WS error");
+                        continue;
+                    }
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
 }
 
-async fn run(tx: &mpsc::Sender<PriceTick>) -> anyhow::Result<()> {
-    let (ws, _) = connect_async(URL).await?;
+async fn run(tx: &mpsc::Sender<PriceTick>, url: &str) -> anyhow::Result<()> {
+    let (ws, _) = connect_async(url).await?;
     let (mut _write, mut read) = ws.split();
 
     while let Some(msg) = read.next().await {
