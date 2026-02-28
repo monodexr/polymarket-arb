@@ -111,12 +111,12 @@ export default function ArbDashboard() {
 
   const sortedMarkets = useMemo(() => {
     const order: Record<string, number> = { executing: 0, divergence: 1, filled: 2, converged: 3, scanning: 4 };
-    return [...markets].sort((a, b) => {
-      const oa = order[a.state] ?? 5;
-      const ob = order[b.state] ?? 5;
+    return [...markets].filter(m => m != null).sort((a, b) => {
+      const oa = order[a?.state] ?? 5;
+      const ob = order[b?.state] ?? 5;
       if (oa !== ob) return oa - ob;
-      if (a.state === "divergence" && b.state === "divergence") return b.edge_pct - a.edge_pct;
-      return a.title.localeCompare(b.title);
+      if (a?.state === "divergence" && b?.state === "divergence") return (b?.edge_pct ?? 0) - (a?.edge_pct ?? 0);
+      return (a?.title ?? "").localeCompare(b?.title ?? "");
     });
   }, [markets]);
 
