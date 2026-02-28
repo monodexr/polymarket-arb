@@ -226,7 +226,7 @@ export default function ArbDashboard() {
         const rest = windowOpenMatch[2];
         const slugPrice = rest.match(/^(\S+)\s*@\s*(.+)$/);
         if (slugPrice) {
-          message = `${windowOpenMatch[1]} 🎬 · ${fmtSlug(slugPrice[1])} @${slugPrice[2].trim()}`;
+          message = `${windowOpenMatch[1]} 🎬 · ${fmtSlug(slugPrice[1])} @ ${slugPrice[2].trim()}`;
         } else {
           message = `${windowOpenMatch[1]} 🎬 · ${rest}`;
         }
