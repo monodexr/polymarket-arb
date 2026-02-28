@@ -204,8 +204,11 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
             };
 
             if expiry <= Utc::now() {
+                info!(question, %expiry, "expired, skipping");
                 continue;
             }
+
+            info!(question, strike, %expiry, "candidate market found");
 
             candidates.push((
                 Market {
@@ -261,10 +264,17 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
     let markets: Vec<Market> = candidates
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| fee_ok.get(i).copied().unwrap_or(false))
+        .filter(|(i, (m, _))| {
+            let ok = fee_ok.get(i).copied().unwrap_or(false);
+            if !ok {
+                info!(market = %m.title, "fee check failed, not fee-free");
+            }
+            ok
+        })
         .map(|(_, (m, _))| m)
         .collect();
 
+    info!(candidates_passed = markets.len(), "fee check complete");
     Ok(markets)
 }
 
