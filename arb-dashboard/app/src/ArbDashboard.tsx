@@ -260,7 +260,7 @@ export default function ArbDashboard() {
           {/* Center */}
           <main style={{ display: "flex", flexDirection: "column", gap: "8px", overflow: "hidden" }}>
             {/* Scoreboard */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr 1px 1.2fr", background: scoreboardBg, color: "#F2F2F3", minHeight: "80px", borderRadius: "12px", overflow: "hidden", border: `1px solid ${borderCol}`, boxShadow: shadowElevation }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr 1px 1.2fr", background: scoreboardBg, color: "#F2F2F3", height: "100px", borderRadius: "12px", overflow: "hidden", border: `1px solid ${borderCol}`, boxShadow: shadowElevation }}>
               {/* Balance */}
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "10px 16px", gap: "4px" }}>
                 <span style={{ ...labelStyle, color: "rgba(128,128,140,0.7)" }}>Balance</span>
@@ -304,7 +304,7 @@ export default function ArbDashboard() {
             </div>
 
             {/* Divergence Board */}
-            <div style={{ ...panelStyle, flex: 1, minHeight: 0, overflow: "auto" }}>
+            <div style={{ ...panelStyle, flex: sortedMarkets.length > 0 ? 1 : undefined, minHeight: sortedMarkets.length > 0 ? 0 : "120px", overflow: "auto" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: "8px", marginBottom: "10px", borderBottom: `1px solid ${borderCol}`, flexShrink: 0 }}>
                 <span style={labelStyle}>Divergence Board</span>
                 <span style={labelStyle}>{markets.length} Markets</span>
@@ -314,12 +314,12 @@ export default function ArbDashboard() {
                   {sortedMarkets.map(m => <ContractCard key={m.condition_id || m.title} market={m} now={now} isDark={isDark} />)}
                 </div>
               ) : (
-                <div style={{ fontFamily: mono, fontSize: "11px", color: inkTertiary, textAlign: "center", padding: "40px 0" }}>No markets monitored</div>
+                <div style={{ fontFamily: mono, fontSize: "11px", color: inkTertiary, textAlign: "center", padding: "20px 0" }}>No markets monitored</div>
               )}
             </div>
 
             {/* Performance Vector */}
-            <div style={{ ...panelStyle, padding: "10px 14px", minHeight: "140px" }}>
+            <div style={{ ...panelStyle, padding: "10px 14px", flex: 1, minHeight: "140px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexShrink: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                   <span style={labelStyle}>Performance Vector</span>
