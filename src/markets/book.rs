@@ -35,17 +35,31 @@ async fn run_loop(book_tx: watch::Sender<BookSnapshot>, mut token_rx: TokenSubRx
     let mut current_tokens: HashSet<String> = HashSet::new();
 
     loop {
-        // Wait for token subscription requests
-        let new_tokens = match token_rx.recv().await {
+        // Wait for at least one token subscription
+        let first = match token_rx.recv().await {
             Some(t) => t,
             None => break,
         };
 
-        let new_set: HashSet<String> = new_tokens.into_iter().collect();
-        if new_set == current_tokens && !current_tokens.is_empty() {
-            continue;
+        // Drain all pending subscriptions (other assets may have queued theirs
+        // within milliseconds of the first). Wait 500ms for stragglers.
+        let mut all_new: HashSet<String> = first.into_iter().collect();
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                token_rx.recv(),
+            )
+            .await
+            {
+                Ok(Some(more)) => {
+                    all_new.extend(more);
+                }
+                _ => break,
+            }
         }
-        current_tokens = new_set;
+
+        // Merge with existing tokens (keep subscriptions from other active windows)
+        current_tokens.extend(all_new);
 
         if current_tokens.is_empty() {
             continue;
@@ -54,8 +68,6 @@ async fn run_loop(book_tx: watch::Sender<BookSnapshot>, mut token_rx: TokenSubRx
         let ids: Vec<String> = current_tokens.iter().cloned().collect();
         info!(tokens = ids.len(), "subscribing to CLOB WS");
 
-        // Drain any pending token subscription while WS is running
-        // by spawning the WS and checking for new tokens
         match run_ws(&ids, &book_tx).await {
             Ok(()) => warn!("CLOB WS closed, will resubscribe on next window"),
             Err(e) => error!(%e, "CLOB WS error"),
