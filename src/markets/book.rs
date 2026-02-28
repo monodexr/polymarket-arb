@@ -111,9 +111,14 @@ async fn run_ws(
         }
     });
 
+    let mut msg_count: u64 = 0;
     while let Some(msg) = read.next().await {
         let msg = msg?;
         if let Message::Text(text) = msg {
+            msg_count += 1;
+            if msg_count <= 3 {
+                info!(msg_num = msg_count, len = text.len(), "CLOB WS raw message: {}", &text[..text.len().min(500)]);
+            }
             process_clob_message(&text, book_tx);
         }
     }
@@ -139,9 +144,15 @@ fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
         .unwrap()
         .as_millis() as u64;
 
+    static BOOK_LOG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     match event_type {
         "book" | "price_change" => {
             if let Some(book) = parse_book_update(&v, now_ms) {
+                let n = BOOK_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < 5 {
+                    info!(event = event_type, asset = asset_id, mid = %format!("{:.4}", book.mid), bid = %format!("{:.4}", book.best_bid), ask = %format!("{:.4}", book.best_ask), "book update parsed");
+                }
                 book_tx.send_modify(|snap| {
                     snap.insert(asset_id.to_string(), book);
                 });
@@ -149,6 +160,10 @@ fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
         }
         "best_bid_ask" => {
             if let Some((bid, ask)) = parse_best_bid_ask(&v) {
+                let n = BOOK_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < 5 {
+                    info!(event = "best_bid_ask", asset = asset_id, bid = %format!("{:.4}", bid), ask = %format!("{:.4}", ask), "bba update parsed");
+                }
                 book_tx.send_modify(|snap| {
                     let entry = snap.entry(asset_id.to_string()).or_default();
                     entry.best_bid = bid;
@@ -158,7 +173,13 @@ fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
                 });
             }
         }
-        _ => {}
+        _ => {
+            static UNK_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = UNK_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 3 {
+                info!(event_type = event_type, "CLOB WS unknown event type");
+            }
+        }
     }
 }
 
