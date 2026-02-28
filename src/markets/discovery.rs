@@ -1,235 +1,245 @@
-use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Utc};
-use regex::Regex;
-use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::DiscoveryConfig;
 
 #[derive(Debug, Clone)]
-pub struct Market {
+pub struct Window {
+    pub slug: String,
+    pub asset: String,
     pub condition_id: String,
     pub yes_token: String,
     pub no_token: String,
-    pub strike: f64,
-    pub expiry: DateTime<Utc>,
-    pub title: String,
-    pub slug: Option<String>,
+    pub open_time: f64,
+    pub close_time: f64,
+    pub open_price: f64,
 }
 
-pub type MarketSnapshot = HashMap<String, Market>;
-pub type MarketStateTx = watch::Sender<MarketSnapshot>;
-pub type MarketStateRx = watch::Receiver<MarketSnapshot>;
+impl Window {
+    pub fn time_remaining(&self) -> f64 {
+        let now = now_secs();
+        (self.close_time - now).max(0.0)
+    }
 
-pub fn spawn(cfg: Config) -> MarketStateRx {
-    let (tx, rx) = watch::channel(MarketSnapshot::new());
-
-    tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(cfg.discovery.poll_interval_secs);
-
-        loop {
-            match discover_markets(&cfg).await {
-                Ok(markets) => {
-                    let count = markets.len();
-                    let mut snapshot = MarketSnapshot::new();
-                    for m in markets {
-                        snapshot.insert(m.yes_token.clone(), m);
-                    }
-                    let _ = tx.send(snapshot);
-                    info!(markets = count, "discovery refresh complete");
-                }
-                Err(e) => error!(%e, "market discovery failed"),
-            }
-            tokio::time::sleep(interval).await;
+    pub fn time_remaining_frac(&self) -> f64 {
+        let duration = self.close_time - self.open_time;
+        if duration <= 0.0 {
+            return 0.0;
         }
-    });
+        self.time_remaining() / duration
+    }
 
-    rx
+    pub fn is_active(&self) -> bool {
+        let now = now_secs();
+        now >= self.open_time && now < self.close_time
+    }
+
+    pub fn is_expired(&self) -> bool {
+        now_secs() >= self.close_time
+    }
 }
 
-/// Parse strike price from text, handling $150k, $1m, $100,000 etc.
-fn parse_strike(text: &str) -> Option<f64> {
-    let re = Regex::new(r"\$([0-9,]+\.?[0-9]*)\s*([kKmMbB])?").ok()?;
-    let caps = re.captures(text)?;
-    let raw = caps.get(1)?.as_str().replace(',', "");
-    let mut value: f64 = raw.parse().ok()?;
-    if let Some(suffix) = caps.get(2) {
-        match suffix.as_str() {
-            "k" | "K" => value *= 1_000.0,
-            "m" | "M" => value *= 1_000_000.0,
-            "b" | "B" => value *= 1_000_000_000.0,
-            _ => {}
+pub fn now_secs() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+
+pub fn current_window_start(duration_secs: u64) -> u64 {
+    let now = now_secs() as u64;
+    now - (now % duration_secs)
+}
+
+pub fn next_window_start(duration_secs: u64) -> u64 {
+    current_window_start(duration_secs) + duration_secs
+}
+
+/// Discover a 5-minute window by deterministic slug lookup.
+/// Retries internally if the market isn't created yet.
+pub async fn discover_window(
+    asset: &str,
+    window_start: u64,
+    cfg: &DiscoveryConfig,
+) -> Option<Window> {
+    let dur = cfg.window_duration_secs;
+    let slug = format!("{}-updown-5m-{}", asset, window_start);
+    let window_end = window_start + dur;
+
+    // Try slug lookup, retry up to 6 times (30s total)
+    for attempt in 0..6 {
+        match slug_lookup(&cfg.gamma_url, &slug, asset, window_start as f64, window_end as f64).await {
+            Some(w) => {
+                info!(slug = %w.slug, asset, "window discovered");
+                return Some(w);
+            }
+            None => {
+                if attempt < 5 {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
         }
     }
-    if value > 0.0 { Some(value) } else { None }
+
+    // Fallback: search Gamma events
+    match search_gamma_events(&cfg.gamma_url, asset, window_start as f64, window_end as f64).await {
+        Some(w) => {
+            info!(slug = %w.slug, asset, "window found via fallback search");
+            Some(w)
+        }
+        None => {
+            warn!(asset, window_start, "window discovery failed after all retries");
+            None
+        }
+    }
 }
 
-async fn discover_markets(cfg: &Config) -> anyhow::Result<Vec<Market>> {
+async fn slug_lookup(
+    gamma_url: &str,
+    slug: &str,
+    asset: &str,
+    start: f64,
+    end: f64,
+) -> Option<Window> {
     let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .get(format!("{}/events", gamma_url))
+        .query(&[("slug", slug), ("limit", "1")])
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
 
-    // Paginate to get all active events (100 per page)
-    let mut all_events: Vec<serde_json::Value> = Vec::new();
-    for offset in (0..500).step_by(100) {
-        let resp: serde_json::Value = client
-            .get("https://gamma-api.polymarket.com/events")
-            .query(&[
-                ("active", "true"),
-                ("closed", "false"),
-                ("limit", "100"),
-                ("offset", &offset.to_string()),
-            ])
-            .send()
-            .await?
-            .json()
-            .await?;
+    let events = resp.as_array()?;
+    let ev = events.first()?;
 
-        let page = resp.as_array().cloned().unwrap_or_default();
-        let count = page.len();
-        all_events.extend(page);
-        if count < 100 {
-            break;
+    // Try markets array first, then treat event as single market
+    if let Some(markets) = ev.get("markets").and_then(|m| m.as_array()) {
+        for m in markets {
+            if let Some(w) = parse_market(m, ev, asset, slug, start, end) {
+                return Some(w);
+            }
         }
     }
 
-    let events = &all_events;
-    info!(total_events = events.len(), "gamma API returned events");
-
-    let mut candidates: Vec<(Market, String)> = Vec::new();
-
-    for event in events {
-        let title = event
-            .get("title")
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-
-        let matches_keyword = cfg
-            .discovery
-            .filter_keywords
-            .iter()
-            .any(|kw| title.to_lowercase().contains(&kw.to_lowercase()));
-        if !matches_keyword {
-            continue;
-        }
-
-        let slug = event.get("slug").and_then(|s| s.as_str()).unwrap_or("");
-        if slug.contains("5-minute") || slug.contains("15-minute") {
-            info!(title, slug, "skipping short-term market");
-            continue;
-        }
-
-        info!(title, slug, "BTC event found, checking markets");
-
-        let event_markets = match event.get("markets").and_then(|m| m.as_array()) {
-            Some(m) => m,
-            None => continue,
-        };
-
-        for mkt in event_markets {
-            let condition_id = mkt
-                .get("conditionId")
-                .and_then(|c| c.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // clobTokenIds is a JSON string containing an array, not an array directly
-            let token_ids: Vec<String> = match mkt.get("clobTokenIds") {
-                Some(serde_json::Value::Array(arr)) => {
-                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                }
-                Some(serde_json::Value::String(s)) => {
-                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
-                }
-                _ => continue,
-            };
-
-            if token_ids.len() < 2 {
-                continue;
-            }
-
-            let yes_token = token_ids[0].clone();
-            let no_token = token_ids[1].clone();
-
-            if yes_token.is_empty() || no_token.is_empty() {
-                continue;
-            }
-
-            let question = mkt
-                .get("question")
-                .and_then(|q| q.as_str())
-                .unwrap_or(title);
-
-            let strike = match parse_strike(question) {
-                Some(v) => v,
-                None => {
-                    info!(question, "no parseable strike price, skipping");
-                    continue;
-                }
-            };
-
-            // Must be a price target (e.g. "hit $150k"), not a holdings question
-            let q_lower = question.to_lowercase();
-            let is_price_target = q_lower.contains("hit")
-                || q_lower.contains("above")
-                || q_lower.contains("below")
-                || q_lower.contains("reach");
-            if !is_price_target {
-                info!(question, strike, "not a price target market, skipping");
-                continue;
-            }
-
-            let expiry_str = mkt
-                .get("endDate")
-                .or_else(|| event.get("endDate"))
-                .and_then(|d| d.as_str())
-                .unwrap_or("");
-
-            let expiry = match expiry_str.parse::<DateTime<Utc>>() {
-                Ok(dt) => dt,
-                Err(_) => {
-                    warn!(market = %question, "could not parse expiry, skipping");
-                    continue;
-                }
-            };
-
-            if expiry <= Utc::now() {
-                info!(question, %expiry, "expired, skipping");
-                continue;
-            }
-
-            // Use feesEnabled from Gamma response (more reliable than CLOB fee-rate endpoint)
-            let fees_enabled = mkt
-                .get("feesEnabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true); // assume fees if field missing
-
-            if fees_enabled {
-                info!(question, "fees enabled, skipping");
-                continue;
-            }
-
-            info!(question, strike, %expiry, "candidate market found (fee-free)");
-
-            candidates.push((
-                Market {
-                    condition_id,
-                    yes_token: yes_token.clone(),
-                    no_token,
-                    strike,
-                    expiry,
-                    title: question.to_string(),
-                    slug: Some(slug.to_string()),
-                },
-                yes_token,
-            ));
-        }
-    }
-
-    // Fee check is now done inline via feesEnabled field from Gamma
-    // All candidates that reach here are already fee-free
-    let markets: Vec<Market> = candidates.into_iter().map(|(m, _)| m).collect();
-
-    info!(markets_found = markets.len(), "discovery complete");
-    Ok(markets)
+    parse_market(ev, ev, asset, slug, start, end)
 }
 
+async fn search_gamma_events(
+    gamma_url: &str,
+    asset: &str,
+    start: f64,
+    end: f64,
+) -> Option<Window> {
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .get(format!("{}/events", gamma_url))
+        .query(&[
+            ("active", "true"),
+            ("closed", "false"),
+            ("limit", "50"),
+            ("order", "volume24hr"),
+            ("ascending", "false"),
+        ])
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    let keywords: &[&str] = match asset {
+        "btc" => &["bitcoin"],
+        "eth" => &["ethereum"],
+        "sol" => &["solana"],
+        "xrp" => &["xrp", "ripple"],
+        _ => &[asset],
+    };
+
+    for ev in resp.as_array()? {
+        let title = ev.get("title").and_then(|t| t.as_str()).unwrap_or("").to_lowercase();
+        if !title.contains("up or down") {
+            continue;
+        }
+        if !keywords.iter().any(|kw| title.contains(kw)) {
+            continue;
+        }
+        if let Some(markets) = ev.get("markets").and_then(|m| m.as_array()) {
+            for m in markets {
+                let slug = m.get("slug").and_then(|s| s.as_str()).unwrap_or("");
+                if slug.contains("5m") || title.contains("5 min") {
+                    if let Some(w) = parse_market(m, ev, asset, slug, start, end) {
+                        if w.is_active() || w.open_time > now_secs() - 60.0 {
+                            return Some(w);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_market(
+    market: &serde_json::Value,
+    event: &serde_json::Value,
+    asset: &str,
+    slug: &str,
+    mut start: f64,
+    mut end: f64,
+) -> Option<Window> {
+    // Parse clobTokenIds (handle string-encoded JSON)
+    let token_ids: Vec<String> = match market.get("clobTokenIds") {
+        Some(serde_json::Value::Array(arr)) => {
+            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+        }
+        Some(serde_json::Value::String(s)) => {
+            serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
+        }
+        _ => return None,
+    };
+
+    if token_ids.len() < 2 {
+        return None;
+    }
+
+    let condition_id = market
+        .get("conditionId")
+        .or_else(|| market.get("condition_id"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Use API endDate to correct for clock drift
+    let end_date = market
+        .get("endDate")
+        .or_else(|| market.get("end_date"))
+        .or_else(|| event.get("endDate"))
+        .and_then(|d| d.as_str())
+        .unwrap_or("");
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(
+        &end_date.replace('Z', "+00:00"),
+    ) {
+        let api_end = dt.timestamp() as f64;
+        if (api_end - end).abs() < 600.0 {
+            end = api_end;
+            start = end - 300.0;
+        }
+    }
+
+    Some(Window {
+        slug: slug.to_string(),
+        asset: asset.to_string(),
+        condition_id,
+        yes_token: token_ids[0].clone(),
+        no_token: token_ids[1].clone(),
+        open_time: start,
+        close_time: end,
+        open_price: 0.0,
+    })
+}

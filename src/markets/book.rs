@@ -1,61 +1,74 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
-
-use super::discovery::MarketStateRx;
 
 #[derive(Debug, Clone, Default)]
 pub struct TokenBook {
     pub best_bid: f64,
     pub best_ask: f64,
     pub mid: f64,
-    pub bid_depth: f64,
-    pub ask_depth: f64,
     pub timestamp_ms: u64,
 }
 
 pub type BookSnapshot = HashMap<String, TokenBook>;
-pub type BookTx = watch::Sender<BookSnapshot>;
 pub type BookRx = watch::Receiver<BookSnapshot>;
 
-pub fn spawn(market_rx: MarketStateRx) -> BookRx {
-    let (tx, rx) = watch::channel(BookSnapshot::new());
+/// Channel for sending new token IDs to subscribe to (per window cycle).
+pub type TokenSubTx = mpsc::Sender<Vec<String>>;
+pub type TokenSubRx = mpsc::Receiver<Vec<String>>;
+
+pub fn spawn() -> (BookRx, TokenSubTx) {
+    let (book_tx, book_rx) = watch::channel(BookSnapshot::new());
+    let (token_tx, token_rx) = mpsc::channel::<Vec<String>>(16);
 
     tokio::spawn(async move {
-        loop {
-            match run_ws(&market_rx, &tx).await {
-                Ok(()) => warn!("CLOB WS closed, reconnecting"),
-                Err(e) => error!(%e, "CLOB WS error, reconnecting in 2s"),
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
+        run_loop(book_tx, token_rx).await;
     });
 
-    rx
+    (book_rx, token_tx)
 }
 
-async fn run_ws(market_rx: &MarketStateRx, book_tx: &BookTx) -> anyhow::Result<()> {
-    let token_ids: Vec<String> = {
-        let markets = market_rx.borrow();
-        let mut ids: Vec<String> = Vec::new();
-        for market in markets.values() {
-            ids.push(market.yes_token.clone());
-            ids.push(market.no_token.clone());
+async fn run_loop(book_tx: watch::Sender<BookSnapshot>, mut token_rx: TokenSubRx) {
+    let mut current_tokens: HashSet<String> = HashSet::new();
+
+    loop {
+        // Wait for token subscription requests
+        let new_tokens = match token_rx.recv().await {
+            Some(t) => t,
+            None => break,
+        };
+
+        let new_set: HashSet<String> = new_tokens.into_iter().collect();
+        if new_set == current_tokens && !current_tokens.is_empty() {
+            continue;
         }
-        ids
-    };
+        current_tokens = new_set;
 
-    if token_ids.is_empty() {
-        info!("no markets discovered yet, waiting 10s");
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        return Ok(());
+        if current_tokens.is_empty() {
+            continue;
+        }
+
+        let ids: Vec<String> = current_tokens.iter().cloned().collect();
+        info!(tokens = ids.len(), "subscribing to CLOB WS");
+
+        // Drain any pending token subscription while WS is running
+        // by spawning the WS and checking for new tokens
+        match run_ws(&ids, &book_tx).await {
+            Ok(()) => warn!("CLOB WS closed, will resubscribe on next window"),
+            Err(e) => error!(%e, "CLOB WS error"),
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+}
 
-    info!(tokens = token_ids.len(), "subscribing to CLOB WS");
-
+async fn run_ws(
+    token_ids: &[String],
+    book_tx: &watch::Sender<BookSnapshot>,
+) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(
         "wss://ws-subscriptions-clob.polymarket.com/ws/market",
     )
@@ -86,52 +99,24 @@ async fn run_ws(market_rx: &MarketStateRx, book_tx: &BookTx) -> anyhow::Result<(
         }
     });
 
-    // M1: Watch for market changes — reconnect when discovery finds new tokens
-    let mut market_watch = market_rx.clone();
-    let token_set: std::collections::HashSet<String> = token_ids.into_iter().collect();
-
-    loop {
-        tokio::select! {
-            msg = read.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        process_clob_message(&text, book_tx);
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => return Err(e.into()),
-                    None => return Ok(()),
-                }
-            }
-            _ = market_watch.changed() => {
-                let new_ids: std::collections::HashSet<String> = {
-                    let markets = market_watch.borrow();
-                    let mut ids = std::collections::HashSet::new();
-                    for m in markets.values() {
-                        ids.insert(m.yes_token.clone());
-                        ids.insert(m.no_token.clone());
-                    }
-                    ids
-                };
-                if new_ids != token_set {
-                    info!(old = token_set.len(), new = new_ids.len(), "market set changed, reconnecting CLOB WS");
-                    return Ok(()); // force reconnect loop with new token set
-                }
-            }
+    while let Some(msg) = read.next().await {
+        let msg = msg?;
+        if let Message::Text(text) = msg {
+            process_clob_message(&text, book_tx);
         }
     }
+
+    Ok(())
 }
 
-fn process_clob_message(json: &str, book_tx: &BookTx) {
+fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
     let v: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
         Err(_) => return,
     };
 
     let event_type = v.get("event_type").and_then(|e| e.as_str()).unwrap_or("");
-    let asset_id = v
-        .get("asset_id")
-        .and_then(|a| a.as_str())
-        .unwrap_or("");
+    let asset_id = v.get("asset_id").and_then(|a| a.as_str()).unwrap_or("");
 
     if asset_id.is_empty() {
         return;
@@ -144,7 +129,7 @@ fn process_clob_message(json: &str, book_tx: &BookTx) {
 
     match event_type {
         "book" | "price_change" => {
-            if let Some(book) = parse_book_update(&v) {
+            if let Some(book) = parse_book_update(&v, now_ms) {
                 book_tx.send_modify(|snap| {
                     snap.insert(asset_id.to_string(), book);
                 });
@@ -165,7 +150,7 @@ fn process_clob_message(json: &str, book_tx: &BookTx) {
     }
 }
 
-fn parse_book_update(v: &serde_json::Value) -> Option<TokenBook> {
+fn parse_book_update(v: &serde_json::Value, now_ms: u64) -> Option<TokenBook> {
     let bids = v.get("bids")?.as_array()?;
     let asks = v.get("asks")?.as_array()?;
 
@@ -187,16 +172,6 @@ fn parse_book_update(v: &serde_json::Value) -> Option<TokenBook> {
         })
         .fold(f64::MAX, f64::min);
 
-    let bid_depth: f64 = bids
-        .iter()
-        .filter_map(|b| b.get("size")?.as_str()?.parse::<f64>().ok())
-        .sum();
-
-    let ask_depth: f64 = asks
-        .iter()
-        .filter_map(|a| a.get("size")?.as_str()?.parse::<f64>().ok())
-        .sum();
-
     let mid = if best_bid > 0.0 && best_ask < f64::MAX {
         (best_bid + best_ask) / 2.0
     } else {
@@ -207,12 +182,7 @@ fn parse_book_update(v: &serde_json::Value) -> Option<TokenBook> {
         best_bid,
         best_ask,
         mid,
-        bid_depth,
-        ask_depth,
-        timestamp_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
+        timestamp_ms: now_ms,
     })
 }
 

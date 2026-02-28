@@ -1,15 +1,15 @@
 [strategy]
-min_edge = 0.003          # 0.3% minimum edge to trigger signal
+min_edge = 0.03           # $0.03 absolute divergence threshold
+min_move_pct = 0.001      # ignore BTC moves < 0.1%
 max_position_pct = 0.005  # 0.5% of bankroll per trade
 max_daily_loss_pct = 0.02 # 2% daily loss cap
-max_open_positions = 10
+max_open_positions = 4    # max 1 per asset
 order_timeout_secs = 2    # cancel unfilled orders after 2s
-stale_price_secs = 5      # ignore feeds older than 5s
-
-[pricing]
-default_vol = 0.65        # 65% annualized, used when Deribit IV unavailable
-risk_free_rate = 0.05     # 5%
+stale_price_secs = 5      # skip if feed > 5s old
+late_window_guard_secs = 10 # no orders in last 10s of window
 
 [discovery]
-poll_interval_secs = 300  # re-scan Gamma API every 5 minutes
-filter_keywords = ["BTC", "Bitcoin"]
+assets = ["btc", "eth", "sol", "xrp"]
+window_duration_secs = 300
+pre_discover_secs = 60
+gamma_url = "https://gamma-api.polymarket.com"

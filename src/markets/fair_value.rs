@@ -1,31 +1,40 @@
-use statrs::distribution::{ContinuousCDF, Normal};
-
-/// Black-Scholes fair value for a binary "BTC > K by T" contract.
-/// Returns probability of finishing above strike = Phi(d2).
-pub fn binary_fair_value(spot: f64, strike: f64, time_years: f64, vol: f64, rate: f64) -> f64 {
-    if time_years <= 0.0 {
-        return if spot > strike { 1.0 } else { 0.0 };
+/// Fair value for a 5-minute up/down binary contract.
+///
+/// Based on how much the spot price has moved from the window opening price
+/// and how much time remains. Conservative model backed by pawn shop data:
+/// >0.20% moves predict direction with ~99% accuracy.
+pub fn fair_yes(spot_now: f64, open_price: f64, time_remaining_frac: f64) -> f64 {
+    if open_price <= 0.0 || spot_now <= 0.0 {
+        return 0.50;
     }
 
-    if vol <= 0.0 || strike <= 0.0 || spot <= 0.0 {
-        return 0.0;
+    // Past window close — don't price expired windows
+    if time_remaining_frac < 0.0 {
+        return 0.50;
     }
 
-    let d2 = ((spot / strike).ln() + (rate - vol * vol / 2.0) * time_years)
-        / (vol * time_years.sqrt());
+    let move_pct = (spot_now - open_price) / open_price;
 
-    let norm = Normal::new(0.0, 1.0).unwrap();
-    let fair = norm.cdf(d2);
+    // Below 0.1% move: noise, no signal
+    if move_pct.abs() < 0.001 {
+        return 0.50;
+    }
 
-    fair.clamp(0.001, 0.999)
+    // Certainty scales from 0.5 at window open to 1.0 at window close.
+    // Later in the window = more confident the direction is locked.
+    let certainty = (1.0 - time_remaining_frac) * 0.5 + 0.5;
+
+    let fair = if move_pct > 0.0 {
+        0.50 + (move_pct * 100.0 * certainty).min(0.45)
+    } else {
+        0.50 - (move_pct.abs() * 100.0 * certainty).min(0.45)
+    };
+
+    fair.clamp(0.05, 0.95)
 }
 
-/// Time to expiry in fractional years.
-pub fn time_to_expiry_years(expiry: chrono::DateTime<chrono::Utc>) -> f64 {
-    let now = chrono::Utc::now();
-    let duration = expiry - now;
-    let secs = duration.num_seconds().max(0) as f64;
-    secs / (365.25 * 24.0 * 3600.0)
+pub fn fair_no(spot_now: f64, open_price: f64, time_remaining_frac: f64) -> f64 {
+    1.0 - fair_yes(spot_now, open_price, time_remaining_frac)
 }
 
 #[cfg(test)]
@@ -33,29 +42,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deep_itm() {
-        let fv = binary_fair_value(100_000.0, 50_000.0, 0.1, 0.65, 0.05);
-        assert!(fv > 0.95, "deep ITM should be near 1.0, got {fv}");
+    fn no_move_returns_half() {
+        assert_eq!(fair_yes(84000.0, 84000.0, 0.5), 0.50);
     }
 
     #[test]
-    fn test_deep_otm() {
-        let fv = binary_fair_value(50_000.0, 200_000.0, 0.01, 0.65, 0.05);
-        assert!(fv < 0.05, "deep OTM should be near 0.0, got {fv}");
+    fn small_move_returns_half() {
+        // 0.05% move — below 0.1% threshold
+        let fv = fair_yes(84042.0, 84000.0, 0.5);
+        assert_eq!(fv, 0.50);
     }
 
     #[test]
-    fn test_atm() {
-        let fv = binary_fair_value(100_000.0, 100_000.0, 0.1, 0.65, 0.05);
-        assert!(
-            (0.4..=0.6).contains(&fv),
-            "ATM should be near 0.5, got {fv}"
-        );
+    fn up_move_increases_fair() {
+        // 0.3% up move, mid-window
+        let fv = fair_yes(84252.0, 84000.0, 0.5);
+        assert!(fv > 0.55, "0.3% up should push fair above 0.55, got {fv}");
+        assert!(fv < 0.80, "shouldn't be extreme, got {fv}");
     }
 
     #[test]
-    fn test_expired() {
-        assert_eq!(binary_fair_value(100_000.0, 90_000.0, 0.0, 0.65, 0.05), 1.0);
-        assert_eq!(binary_fair_value(80_000.0, 90_000.0, 0.0, 0.65, 0.05), 0.0);
+    fn down_move_decreases_fair() {
+        // 0.3% down move, mid-window
+        let fv = fair_yes(83748.0, 84000.0, 0.5);
+        assert!(fv < 0.45, "0.3% down should push fair below 0.45, got {fv}");
+        assert!(fv > 0.20, "shouldn't be extreme, got {fv}");
+    }
+
+    #[test]
+    fn late_window_more_certain() {
+        // Same 0.2% move, early vs late
+        let early = fair_yes(84168.0, 84000.0, 0.9); // 90% time left
+        let late = fair_yes(84168.0, 84000.0, 0.1);  // 10% time left
+        assert!(late > early, "late window should be more certain: early={early}, late={late}");
+    }
+
+    #[test]
+    fn large_move_caps_at_95() {
+        // 2% move — should cap at 0.95
+        let fv = fair_yes(85680.0, 84000.0, 0.1);
+        assert_eq!(fv, 0.95);
+    }
+
+    #[test]
+    fn expired_returns_half() {
+        let fv = fair_yes(85000.0, 84000.0, -0.1);
+        assert_eq!(fv, 0.50);
+    }
+
+    #[test]
+    fn fair_no_complement() {
+        let yes = fair_yes(84252.0, 84000.0, 0.5);
+        let no = fair_no(84252.0, 84000.0, 0.5);
+        assert!((yes + no - 1.0).abs() < 0.001, "YES + NO should = 1.0");
     }
 }

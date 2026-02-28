@@ -4,30 +4,27 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub strategy: StrategyConfig,
-    pub pricing: PricingConfig,
     pub discovery: DiscoveryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StrategyConfig {
     pub min_edge: f64,
+    pub min_move_pct: f64,
     pub max_position_pct: f64,
     pub max_daily_loss_pct: f64,
     pub max_open_positions: usize,
     pub order_timeout_secs: u64,
     pub stale_price_secs: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct PricingConfig {
-    pub default_vol: f64,
-    pub risk_free_rate: f64,
+    pub late_window_guard_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveryConfig {
-    pub poll_interval_secs: u64,
-    pub filter_keywords: Vec<String>,
+    pub assets: Vec<String>,
+    pub window_duration_secs: u64,
+    pub pre_discover_secs: u64,
+    pub gamma_url: String,
 }
 
 impl Config {
