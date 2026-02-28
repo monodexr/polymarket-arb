@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStatus, useAlerts, useTrades } from "./hooks/useApi";
 import { useSoundSettings } from "./hooks/useSoundSettings";
 import { useTick } from "./hooks/useTick";
-import { formatUsd, formatTime, formatEdge, formatPrice, formatDuration } from "./lib/utils";
+import { formatUsd, formatTime, formatEdge, formatPrice } from "./lib/utils";
 import type { ArbMarket, ArbTrade, Alert } from "./lib/types";
 
 const StatusDot = ({ style: extraStyle }: { style?: React.CSSProperties }) => {
@@ -318,6 +318,7 @@ export default function ArbDashboard() {
         <header style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr auto" : "auto 1fr auto", alignItems: "center", background: bgSurface, border: `1px solid ${borderCol}`, borderRadius: "12px", padding: "8px 16px", height: "64px", boxShadow: shadowElevation }}>
           <div style={{ fontFamily: mono, fontWeight: 700, fontSize: "14px", letterSpacing: "-0.5px", display: "flex", alignItems: "center", gap: "6px" }}>
             MONODEXR ARB <span style={{ fontWeight: 400, fontSize: "10px", color: inkTertiary }}>0.0.1</span>
+            {isMobile && <StatusDot style={{ marginLeft: "4px", ...(healthy ? {} : { background: "#D92525" }) }} />}
           </div>
           {!isMobile && <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "10px", fontWeight: 600, textTransform: "uppercase", color: inkSecondary, background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: "4px" }}>
@@ -384,6 +385,7 @@ export default function ArbDashboard() {
                 <span style={{ fontFamily: mono, fontSize: "9px", color: "rgba(255,255,255,0.35)" }}>seed: {formatUsd(seed)}</span>
               </div>
               {!isMobile && <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />}
+              {isMobile && <div style={{ height: "1px", background: "rgba(255,255,255,0.08)", margin: "0 16px" }} />}
               {/* Trades */}
               <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", gap: "3px", justifyContent: "center" }}>
                 <span style={{ ...labelStyle, color: "rgba(128,128,140,0.7)" }}>Trades</span>
@@ -401,6 +403,7 @@ export default function ArbDashboard() {
                 </div>
               </div>
               {!isMobile && <div style={{ width: "1px", background: "rgba(255,255,255,0.1)", margin: "10px 0" }} />}
+              {isMobile && <div style={{ height: "1px", background: "rgba(255,255,255,0.08)", margin: "0 16px" }} />}
               {/* Edge Status */}
               <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", gap: "5px", justifyContent: "center" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
