@@ -69,24 +69,51 @@ pub fn spawn(cfg: Config) -> MarketStateRx {
     rx
 }
 
+/// Parse strike price from text, handling $150k, $1m, $100,000 etc.
+fn parse_strike(text: &str) -> Option<f64> {
+    let re = Regex::new(r"\$([0-9,]+\.?[0-9]*)\s*([kKmMbB])?").ok()?;
+    let caps = re.captures(text)?;
+    let raw = caps.get(1)?.as_str().replace(',', "");
+    let mut value: f64 = raw.parse().ok()?;
+    if let Some(suffix) = caps.get(2) {
+        match suffix.as_str() {
+            "k" | "K" => value *= 1_000.0,
+            "m" | "M" => value *= 1_000_000.0,
+            "b" | "B" => value *= 1_000_000_000.0,
+            _ => {}
+        }
+    }
+    if value > 0.0 { Some(value) } else { None }
+}
+
 async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Result<Vec<Market>> {
     let client = reqwest::Client::new();
-    let strike_re = Regex::new(r"\$([0-9,]+)")?;
 
-    let resp: serde_json::Value = client
-        .get("https://gamma-api.polymarket.com/events")
-        .query(&[
-            ("active", "true"),
-            ("closed", "false"),
-            ("limit", "100"),
-        ])
-        .send()
-        .await?
-        .json()
-        .await?;
+    // Paginate to get all active events (100 per page)
+    let mut all_events: Vec<serde_json::Value> = Vec::new();
+    for offset in (0..500).step_by(100) {
+        let resp: serde_json::Value = client
+            .get("https://gamma-api.polymarket.com/events")
+            .query(&[
+                ("active", "true"),
+                ("closed", "false"),
+                ("limit", "100"),
+                ("offset", &offset.to_string()),
+            ])
+            .send()
+            .await?
+            .json()
+            .await?;
 
-    let empty = vec![];
-    let events = resp.as_array().unwrap_or(&empty);
+        let page = resp.as_array().cloned().unwrap_or_default();
+        let count = page.len();
+        all_events.extend(page);
+        if count < 100 {
+            break;
+        }
+    }
+
+    let events = &all_events;
     info!(total_events = events.len(), "gamma API returned events");
 
     let mut candidates: Vec<(Market, String)> = Vec::new();
@@ -143,22 +170,24 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
                 .and_then(|q| q.as_str())
                 .unwrap_or(title);
 
-            let strike = match strike_re.captures(question) {
-                Some(caps) => {
-                    let raw = caps.get(1).unwrap().as_str().replace(',', "");
-                    match raw.parse::<f64>() {
-                        Ok(v) => v,
-                        Err(_) => {
-                            info!(question, "could not parse strike number, skipping");
-                            continue;
-                        }
-                    }
-                }
+            let strike = match parse_strike(question) {
+                Some(v) => v,
                 None => {
-                    info!(question, "no $ strike in title, skipping");
+                    info!(question, "no parseable strike price, skipping");
                     continue;
                 }
             };
+
+            // Must be a price target (e.g. "hit $150k"), not a holdings question
+            let q_lower = question.to_lowercase();
+            let is_price_target = q_lower.contains("hit")
+                || q_lower.contains("above")
+                || q_lower.contains("below")
+                || q_lower.contains("reach");
+            if !is_price_target {
+                info!(question, strike, "not a price target market, skipping");
+                continue;
+            }
 
             let expiry_str = mkt
                 .get("endDate")
