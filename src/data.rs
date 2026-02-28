@@ -30,7 +30,7 @@ pub struct Status {
     pub recent_trades: Vec<serde_json::Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct WindowStatus {
     pub slug: String,
     pub asset: String,

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Instant;
 
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::config::StrategyConfig;
 use crate::markets::book::BookSnapshot;
@@ -54,8 +54,6 @@ pub struct OpenDivergence {
     peak_edge: f64,
 }
 
-/// Evaluate all active windows for divergences. Called on every price or book update.
-/// Returns events to send downstream.
 pub fn evaluate(
     windows: &[Window],
     spot: f64,
@@ -64,21 +62,18 @@ pub fn evaluate(
     open_divs: &mut std::collections::HashMap<String, OpenDivergence>,
 ) -> Vec<DivEvent> {
     let mut events = Vec::new();
-    let _now = crate::markets::discovery::now_secs();
 
     for window in windows {
         if !window.is_active() || window.open_price <= 0.0 {
             continue;
         }
 
-        // Late-window guard: no signals in last N seconds
         if window.time_remaining() < cfg.late_window_guard_secs as f64 {
             continue;
         }
 
         let move_pct = (spot - window.open_price) / window.open_price;
         if move_pct.abs() < cfg.min_move_pct {
-            // Close any open divergences when move drops back to noise
             if let Some(div) = open_divs.remove(&window.slug) {
                 events.push(DivEvent::Converged {
                     market_name: window.slug.clone(),
@@ -103,9 +98,18 @@ pub fn evaluate(
             continue;
         }
 
-        // Check YES side edge
+        // M1: Complementary pricing check — YES + NO should be close to 1.0
+        let pair_sum = yes_mid + no_mid;
+        if pair_sum > 0.0 && (pair_sum < 0.85 || pair_sum > 1.15) {
+            debug!(
+                market = %window.slug,
+                pair_sum = %format!("{:.3}", pair_sum),
+                "thin market (YES+NO far from 1.0), skipping"
+            );
+            continue;
+        }
+
         let yes_edge = fv_yes - yes_mid;
-        // Check NO side edge
         let no_edge = fv_no - no_mid;
 
         let (edge, side, token_id, price, fair, clob_mid) = if yes_edge > no_edge && yes_edge > cfg.min_edge {
@@ -115,7 +119,6 @@ pub fn evaluate(
             let ask = no_book.map(|b| b.best_ask).unwrap_or(0.0);
             (no_edge, Side::BuyNo, window.no_token.clone(), ask, fv_no, no_mid)
         } else {
-            // No edge — check if an open divergence should close
             if let Some(div) = open_divs.remove(&window.slug) {
                 events.push(DivEvent::Converged {
                     market_name: window.slug.clone(),
@@ -130,7 +133,6 @@ pub fn evaluate(
             continue;
         }
 
-        // Track divergence duration
         let div = open_divs.entry(window.slug.clone()).or_insert_with(|| OpenDivergence {
             opened_at: Instant::now(),
             peak_edge: 0.0,
@@ -149,6 +151,7 @@ pub fn evaluate(
             time_remaining = %format!("{:.0}s", window.time_remaining()),
         );
 
+        // size_usd is set to 0.0 here — caller (run_asset_loop) sizes via RiskManager
         events.push(DivEvent::Signal(Signal {
             market_name: window.slug.clone(),
             asset: window.asset.clone(),
@@ -159,7 +162,7 @@ pub fn evaluate(
             clob_mid,
             edge,
             price,
-            size_usd: 0.0, // sized by risk manager
+            size_usd: 0.0,
             move_pct,
             time_remaining_frac: time_frac,
         }));
