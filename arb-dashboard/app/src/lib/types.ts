@@ -14,7 +14,7 @@ export interface ArbMarket {
   edge_pct: number;
   divergence_open: boolean;
   divergence_since: number | null;
-  state: "scanning" | "divergence" | "executing" | "filled" | "converged";
+  state: "scanning" | "monitoring" | "divergence" | "executing" | "filled" | "converged";
 }
 
 export interface TradesSummary {
