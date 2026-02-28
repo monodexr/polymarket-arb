@@ -47,12 +47,12 @@ pub async fn spawn(mut event_rx: mpsc::Receiver<DivEvent>, cfg: Config) -> Resul
                         error!(%e, market = %signal.market_name, "order execution failed");
                     }
                 }
-                DivEvent::Converged { market_name, duration_ms, peak_edge_pct } => {
+                DivEvent::Converged { market_name, duration_ms, peak_edge } => {
                     info!(
                         event = "CONVERGED_EXEC",
                         market = %market_name,
                         duration_ms,
-                        peak_edge = %format!("{:.2}%", peak_edge_pct * 100.0),
+                        peak_edge = %format!("${:.4}", peak_edge),
                     );
                 }
             }
@@ -84,7 +84,7 @@ async fn execute_signal<S: Signer + Send + Sync>(
         side = %signal.side,
         price = %price,
         size = %size,
-        edge = %format!("{:.2}%", signal.edge_pct * 100.0),
+        edge = %format!("${:.4}", signal.edge),
     );
 
     let order: SignableOrder = client
@@ -112,10 +112,16 @@ async fn execute_signal<S: Signer + Send + Sync>(
         success = response.success,
     );
 
-    // M5: wire fill to position tracker + risk manager
+    crate::data::alert("INFO", "arb.fill",
+        &format!("Placed {} @ ${:.4} on {}", signal.side, signal.price, signal.market_name),
+        serde_json::json!({
+            "market": signal.market_name, "side": signal.side.to_string(),
+            "price": signal.price, "edge": signal.edge,
+        }));
+
     positions.record_open(signal.clone());
 
-    // M4: Cancel unfilled order after timeout
+    // Cancel unfilled order after timeout
     let cancel_client = client.clone();
     let cancel_order_id = order_id.clone();
     let cancel_market = signal.market_name.clone();
@@ -128,15 +134,11 @@ async fn execute_signal<S: Signer + Send + Sync>(
                 order_id = %cancel_order_id,
                 reason = "timeout",
             ),
-            Err(e) => {
-                // Order was already filled or cancelled — not an error
-                info!(
-                    event = "CANCEL_SKIPPED",
-                    market = %cancel_market,
-                    order_id = %cancel_order_id,
-                    reason = %e,
-                );
-            }
+            Err(e) => info!(
+                event = "CANCEL_SKIPPED",
+                market = %cancel_market,
+                reason = %e,
+            ),
         }
     });
 
