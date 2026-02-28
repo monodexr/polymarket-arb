@@ -7,8 +7,8 @@ use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::feeds::aggregator::PriceState;
-use crate::markets::book::{BookState, TokenBook};
-use crate::markets::discovery::{Market, MarketState};
+use crate::markets::book::{BookRx, BookSnapshot};
+use crate::markets::discovery::{Market, MarketStateRx};
 use crate::markets::fair_value;
 use crate::strategy::risk::RiskManager;
 
@@ -25,6 +25,17 @@ impl fmt::Display for Side {
             Side::BuyNo => write!(f, "BUY_NO"),
         }
     }
+}
+
+/// Emitted on both divergence OPEN (trade signal) and CLOSE (convergence).
+#[derive(Debug, Clone)]
+pub enum DivEvent {
+    Signal(Signal),
+    Converged {
+        market_name: String,
+        duration_ms: u128,
+        peak_edge_pct: f64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -48,9 +59,9 @@ struct OpenDivergence {
 
 pub fn spawn(
     mut price_rx: watch::Receiver<PriceState>,
-    book_state: BookState,
-    market_state: MarketState,
-    signal_tx: mpsc::Sender<Signal>,
+    mut book_rx: BookRx,
+    market_rx: MarketStateRx,
+    event_tx: mpsc::Sender<DivEvent>,
     cfg: Config,
 ) {
     tokio::spawn(async move {
@@ -61,8 +72,14 @@ pub fn spawn(
         let rate = cfg.pricing.risk_free_rate;
 
         loop {
-            if price_rx.changed().await.is_err() {
-                break;
+            // H1: Wake on EITHER spot price change OR CLOB book change
+            tokio::select! {
+                res = price_rx.changed() => {
+                    if res.is_err() { break; }
+                }
+                res = book_rx.changed() => {
+                    if res.is_err() { break; }
+                }
             }
 
             let price_state = price_rx.borrow().clone();
@@ -74,14 +91,11 @@ pub fn spawn(
             let vol = price_state.implied_vol.unwrap_or(vol_default);
 
             let markets: Vec<Market> = {
-                let guard = market_state.read().unwrap();
-                guard.values().cloned().collect()
+                let snap = market_rx.borrow();
+                snap.values().cloned().collect()
             };
 
-            let books: HashMap<String, TokenBook> = {
-                let guard = book_state.read().unwrap();
-                guard.clone()
-            };
+            let books: BookSnapshot = book_rx.borrow().clone();
 
             for market in &markets {
                 let time_years = fair_value::time_to_expiry_years(market.expiry);
@@ -95,7 +109,6 @@ pub fn spawn(
                     _ => continue,
                 };
 
-                // Cross-check: YES + NO should be close to 1.0
                 let no_mid = no_book.map(|b| b.mid).unwrap_or(0.0);
                 let pair_sum = clob_mid + no_mid;
                 if pair_sum > 0.0 && (pair_sum < 0.90 || pair_sum > 1.10) {
@@ -117,7 +130,6 @@ pub fn spawn(
                 let key = market.yes_token.clone();
 
                 if edge_pct.abs() > min_edge {
-                    // Track divergence duration
                     let div = open_divergences
                         .entry(key.clone())
                         .or_insert_with(|| OpenDivergence {
@@ -170,9 +182,8 @@ pub fn spawn(
                         size = %format!("${:.2}", size_usd),
                     );
 
-                    let _ = signal_tx.send(signal).await;
+                    let _ = event_tx.send(DivEvent::Signal(signal)).await;
                 } else {
-                    // Divergence closed — log duration
                     if let Some(div) = open_divergences.remove(&key) {
                         let duration = div.opened_at.elapsed();
                         info!(
@@ -181,6 +192,13 @@ pub fn spawn(
                             duration_ms = duration.as_millis(),
                             peak_edge = %format!("{:.2}%", div.peak_edge * 100.0),
                         );
+                        let _ = event_tx
+                            .send(DivEvent::Converged {
+                                market_name: div.market_name,
+                                duration_ms: duration.as_millis(),
+                                peak_edge_pct: div.peak_edge,
+                            })
+                            .await;
                     }
                 }
             }

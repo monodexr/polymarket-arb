@@ -54,13 +54,23 @@ fn parse_trade(json: &str) -> Option<PriceTick> {
     let data = v.get("data")?.as_array()?;
     let last = data.last()?;
     let price: f64 = last.get("price")?.as_f64()?;
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+
+    // M2: Use exchange-side timestamp from "timestamp" field (ISO 8601)
+    let ts_ms = last
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis() as u64)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        });
+
     Some(PriceTick {
         source: "kraken",
         price,
-        timestamp_ms: now_ms,
+        timestamp_ms: ts_ms,
     })
 }

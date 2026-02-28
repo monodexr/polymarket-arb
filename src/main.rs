@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::feeds::aggregator::PriceState;
-use crate::strategy::divergence::Signal;
+use crate::strategy::divergence::DivEvent;
 
 #[derive(Parser)]
 #[command(name = "polymarket-arb", about = "Polymarket latency arbitrage bot")]
@@ -38,25 +38,25 @@ async fn main() -> Result<()> {
     }
 
     let (price_tx, price_rx) = watch::channel(PriceState::default());
-    let (signal_tx, signal_rx) = mpsc::channel::<Signal>(256);
+    let (event_tx, event_rx) = mpsc::channel::<DivEvent>(256);
 
-    let market_state = markets::discovery::spawn(cfg.clone());
-    let book_state = markets::spawn_clob_ws(market_state.clone());
+    let market_rx = markets::discovery::spawn(cfg.clone());
+    let book_rx = markets::spawn_clob_ws(market_rx.clone());
 
     feeds::spawn_all(price_tx, &cfg);
 
     strategy::divergence::spawn(
         price_rx.clone(),
-        book_state.clone(),
-        market_state.clone(),
-        signal_tx,
+        book_rx,
+        market_rx,
+        event_tx,
         cfg.clone(),
     );
 
     if cli.dry_run {
-        logging::spawn_dry_run_logger(signal_rx, price_rx, book_state, market_state, cfg);
+        logging::spawn_dry_run_logger(event_rx, price_rx);
     } else {
-        executor::spawn(signal_rx, cfg.clone()).await?;
+        executor::spawn(event_rx, cfg.clone()).await?;
     }
 
     tokio::signal::ctrl_c().await?;

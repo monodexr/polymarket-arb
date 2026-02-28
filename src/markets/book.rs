@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use futures_util::StreamExt;
+use tokio::sync::watch;
 use tracing::{error, info, warn};
 
-use super::discovery::MarketState;
+use super::discovery::MarketStateRx;
 
 #[derive(Debug, Clone, Default)]
 pub struct TokenBook {
@@ -16,15 +17,16 @@ pub struct TokenBook {
     pub timestamp_ms: u64,
 }
 
-pub type BookState = Arc<RwLock<HashMap<String, TokenBook>>>;
+pub type BookSnapshot = HashMap<String, TokenBook>;
+pub type BookTx = watch::Sender<BookSnapshot>;
+pub type BookRx = watch::Receiver<BookSnapshot>;
 
-pub fn spawn(market_state: MarketState) -> BookState {
-    let state: BookState = Arc::new(RwLock::new(HashMap::new()));
-    let state_clone = state.clone();
+pub fn spawn(market_rx: MarketStateRx) -> BookRx {
+    let (tx, rx) = watch::channel(BookSnapshot::new());
 
     tokio::spawn(async move {
         loop {
-            match run_ws(&market_state, &state_clone).await {
+            match run_ws(&market_rx, &tx).await {
                 Ok(()) => warn!("CLOB WS closed, reconnecting"),
                 Err(e) => error!(%e, "CLOB WS error, reconnecting in 2s"),
             }
@@ -32,15 +34,14 @@ pub fn spawn(market_state: MarketState) -> BookState {
         }
     });
 
-    state
+    rx
 }
 
-async fn run_ws(market_state: &MarketState, book_state: &BookState) -> anyhow::Result<()> {
-    // Collect all token IDs from discovered markets
+async fn run_ws(market_rx: &MarketStateRx, book_tx: &BookTx) -> anyhow::Result<()> {
     let token_ids: Vec<String> = {
-        let guard = market_state.read().unwrap();
+        let markets = market_rx.borrow();
         let mut ids: Vec<String> = Vec::new();
-        for market in guard.values() {
+        for market in markets.values() {
             ids.push(market.yes_token.clone());
             ids.push(market.no_token.clone());
         }
@@ -73,7 +74,6 @@ async fn run_ws(market_state: &MarketState, book_state: &BookState) -> anyhow::R
         .send(Message::Text(sub_msg.to_string().into()))
         .await?;
 
-    // Ping keepalive every 10s
     let write = Arc::new(tokio::sync::Mutex::new(write));
     let write_ping = write.clone();
     tokio::spawn(async move {
@@ -86,23 +86,47 @@ async fn run_ws(market_state: &MarketState, book_state: &BookState) -> anyhow::R
         }
     });
 
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if let Message::Text(text) = msg {
-            process_clob_message(&text, book_state);
+    // M1: Watch for market changes — reconnect when discovery finds new tokens
+    let mut market_watch = market_rx.clone();
+    let token_set: std::collections::HashSet<String> = token_ids.into_iter().collect();
+
+    loop {
+        tokio::select! {
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        process_clob_message(&text, book_tx);
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Ok(()),
+                }
+            }
+            _ = market_watch.changed() => {
+                let new_ids: std::collections::HashSet<String> = {
+                    let markets = market_watch.borrow();
+                    let mut ids = std::collections::HashSet::new();
+                    for m in markets.values() {
+                        ids.insert(m.yes_token.clone());
+                        ids.insert(m.no_token.clone());
+                    }
+                    ids
+                };
+                if new_ids != token_set {
+                    info!(old = token_set.len(), new = new_ids.len(), "market set changed, reconnecting CLOB WS");
+                    return Ok(()); // force reconnect loop with new token set
+                }
+            }
         }
     }
-
-    Ok(())
 }
 
-fn process_clob_message(json: &str, book_state: &BookState) {
+fn process_clob_message(json: &str, book_tx: &BookTx) {
     let v: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
         Err(_) => return,
     };
 
-    // Handle different message types from the CLOB WS
     let event_type = v.get("event_type").and_then(|e| e.as_str()).unwrap_or("");
     let asset_id = v
         .get("asset_id")
@@ -113,24 +137,28 @@ fn process_clob_message(json: &str, book_state: &BookState) {
         return;
     }
 
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
     match event_type {
         "book" | "price_change" => {
             if let Some(book) = parse_book_update(&v) {
-                let mut guard = book_state.write().unwrap();
-                guard.insert(asset_id.to_string(), book);
+                book_tx.send_modify(|snap| {
+                    snap.insert(asset_id.to_string(), book);
+                });
             }
         }
         "best_bid_ask" => {
             if let Some((bid, ask)) = parse_best_bid_ask(&v) {
-                let mut guard = book_state.write().unwrap();
-                let entry = guard.entry(asset_id.to_string()).or_default();
-                entry.best_bid = bid;
-                entry.best_ask = ask;
-                entry.mid = (bid + ask) / 2.0;
-                entry.timestamp_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
+                book_tx.send_modify(|snap| {
+                    let entry = snap.entry(asset_id.to_string()).or_default();
+                    entry.best_bid = bid;
+                    entry.best_ask = ask;
+                    entry.mid = (bid + ask) / 2.0;
+                    entry.timestamp_ms = now_ms;
+                });
             }
         }
         _ => {}

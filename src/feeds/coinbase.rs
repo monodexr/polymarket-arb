@@ -50,13 +50,23 @@ fn parse_match(json: &str) -> Option<PriceTick> {
         return None;
     }
     let price: f64 = v.get("price")?.as_str()?.parse().ok()?;
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+
+    // M2: Use exchange-side timestamp from "time" field (ISO 8601)
+    let ts_ms = v
+        .get("time")
+        .and_then(|t| t.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis() as u64)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        });
+
     Some(PriceTick {
         source: "coinbase",
         price,
-        timestamp_ms: now_ms,
+        timestamp_ms: ts_ms,
     })
 }

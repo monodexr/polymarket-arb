@@ -4,11 +4,8 @@ use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
-use crate::config::Config;
 use crate::feeds::aggregator::PriceState;
-use crate::markets::book::BookState;
-use crate::markets::discovery::MarketState;
-use crate::strategy::divergence::Signal;
+use crate::strategy::divergence::DivEvent;
 
 pub fn init() {
     tracing_subscriber::fmt()
@@ -21,60 +18,115 @@ pub fn init() {
 }
 
 pub fn spawn_dry_run_logger(
-    mut signal_rx: mpsc::Receiver<Signal>,
+    mut event_rx: mpsc::Receiver<DivEvent>,
     price_rx: watch::Receiver<PriceState>,
-    _book_state: BookState,
-    _market_state: MarketState,
-    _cfg: Config,
 ) {
     tokio::spawn(async move {
         let start = Instant::now();
         let mut total_signals = 0u64;
+        let mut total_converged = 0u64;
         let mut edge_sum = 0.0f64;
-        let _durations: Vec<f64> = Vec::new();
+        let mut durations_ms: Vec<u128> = Vec::new();
         let mut per_market: HashMap<String, u64> = HashMap::new();
 
-        while let Some(signal) = signal_rx.recv().await {
-            total_signals += 1;
-            edge_sum += signal.edge_pct.abs();
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                DivEvent::Signal(signal) => {
+                    total_signals += 1;
+                    edge_sum += signal.edge_pct.abs();
+                    *per_market.entry(signal.market_name.clone()).or_default() += 1;
 
-            *per_market.entry(signal.market_name.clone()).or_default() += 1;
+                    let spot = price_rx.borrow().spot_price;
 
-            let spot = price_rx.borrow().spot_price;
+                    info!(
+                        event = "SIGNAL",
+                        market = %signal.market_name,
+                        side = %signal.side,
+                        fair = %format!("{:.4}", signal.fair_value),
+                        clob_mid = %format!("{:.4}", signal.clob_mid),
+                        edge_pct = %format!("{:.2}%", signal.edge_pct * 100.0),
+                        spot = %format!("{:.2}", spot),
+                        dry_run = true,
+                    );
+                }
+                DivEvent::Converged { market_name, duration_ms, peak_edge_pct } => {
+                    total_converged += 1;
+                    durations_ms.push(duration_ms);
 
-            info!(
-                event = "SIGNAL",
-                market = %signal.market_name,
-                side = %signal.side,
-                fair = %format!("{:.4}", signal.fair_value),
-                clob_mid = %format!("{:.4}", signal.clob_mid),
-                edge_pct = %format!("{:.2}%", signal.edge_pct * 100.0),
-                spot = %format!("{:.2}", spot),
-                dry_run = true,
-            );
+                    info!(
+                        event = "CONVERGED",
+                        market = %market_name,
+                        duration_ms,
+                        peak_edge = %format!("{:.2}%", peak_edge_pct * 100.0),
+                        dry_run = true,
+                    );
+                }
+            }
 
-            if total_signals % 50 == 0 {
-                let elapsed = start.elapsed().as_secs_f64() / 3600.0;
-                let rate = total_signals as f64 / elapsed.max(0.001);
-                let avg_edge = edge_sum / total_signals as f64;
-                info!(
-                    event = "SUMMARY",
-                    total_signals,
-                    signals_per_hour = %format!("{:.1}", rate),
-                    avg_edge_pct = %format!("{:.3}%", avg_edge * 100.0),
-                    unique_markets = per_market.len(),
+            let total_events = total_signals + total_converged;
+            if total_events % 50 == 0 && total_events > 0 {
+                print_summary(
+                    &start, total_signals, &durations_ms, edge_sum, &per_market,
                 );
             }
         }
 
-        warn!("signal channel closed, logging final summary");
-        let elapsed_hrs = start.elapsed().as_secs_f64() / 3600.0;
-        info!(
-            event = "FINAL_SUMMARY",
-            total_signals,
-            elapsed_hours = %format!("{:.2}", elapsed_hrs),
-            avg_edge_pct = %format!("{:.3}%", if total_signals > 0 { edge_sum / total_signals as f64 * 100.0 } else { 0.0 }),
-            unique_markets = per_market.len(),
+        warn!("event channel closed, logging final summary");
+        print_summary(
+            &start, total_signals, &durations_ms, edge_sum, &per_market,
         );
     });
+}
+
+fn print_summary(
+    start: &Instant,
+    total_signals: u64,
+    durations_ms: &[u128],
+    edge_sum: f64,
+    per_market: &HashMap<String, u64>,
+) {
+    let elapsed_hrs = start.elapsed().as_secs_f64() / 3600.0;
+    let rate = total_signals as f64 / elapsed_hrs.max(0.001);
+    let avg_edge = if total_signals > 0 {
+        edge_sum / total_signals as f64
+    } else {
+        0.0
+    };
+
+    let median_duration_ms = if !durations_ms.is_empty() {
+        let mut sorted = durations_ms.to_vec();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
+    } else {
+        0
+    };
+
+    let pct_under_100ms = if !durations_ms.is_empty() {
+        durations_ms.iter().filter(|&&d| d < 100).count() as f64
+            / durations_ms.len() as f64
+            * 100.0
+    } else {
+        0.0
+    };
+
+    let pct_over_1s = if !durations_ms.is_empty() {
+        durations_ms.iter().filter(|&&d| d > 1000).count() as f64
+            / durations_ms.len() as f64
+            * 100.0
+    } else {
+        0.0
+    };
+
+    info!(
+        event = "SUMMARY",
+        total_signals,
+        total_converged = durations_ms.len(),
+        signals_per_hour = %format!("{:.1}", rate),
+        avg_edge_pct = %format!("{:.3}%", avg_edge * 100.0),
+        median_duration_ms,
+        pct_under_100ms = %format!("{:.1}%", pct_under_100ms),
+        pct_over_1s = %format!("{:.1}%", pct_over_1s),
+        unique_markets = per_market.len(),
+        elapsed_hours = %format!("{:.2}", elapsed_hrs),
+    );
 }

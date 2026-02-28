@@ -26,7 +26,6 @@ async fn run(tx: &mpsc::Sender<PriceTick>) -> anyhow::Result<()> {
     let (ws, _) = connect_async(URL).await?;
     let (mut write, mut read) = ws.split();
 
-    // BTC index price for spot reference
     let sub_index = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -37,7 +36,6 @@ async fn run(tx: &mpsc::Sender<PriceTick>) -> anyhow::Result<()> {
     });
     write.send(Message::Text(sub_index.to_string().into())).await?;
 
-    // BTC perpetual ticker for mark IV
     let sub_perp = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -76,10 +74,16 @@ async fn parse_and_send(json: &str, tx: &mpsc::Sender<PriceTick>) {
         None => return,
     };
 
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    // M2: Use exchange-side timestamp ("timestamp" field = epoch ms) with local fallback
+    let ts_ms = data
+        .get("timestamp")
+        .and_then(|t| t.as_u64())
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        });
 
     if channel == "deribit_price_index.btc_usd" {
         if let Some(price) = data.get("price").and_then(|p| p.as_f64()) {
@@ -87,7 +91,7 @@ async fn parse_and_send(json: &str, tx: &mpsc::Sender<PriceTick>) {
                 .send(PriceTick {
                     source: "deribit",
                     price,
-                    timestamp_ms: now_ms,
+                    timestamp_ms: ts_ms,
                 })
                 .await;
         }
@@ -101,7 +105,7 @@ async fn parse_and_send(json: &str, tx: &mpsc::Sender<PriceTick>) {
                 .send(PriceTick {
                     source: "deribit_iv",
                     price: annualized,
-                    timestamp_ms: now_ms,
+                    timestamp_ms: ts_ms,
                 })
                 .await;
         }
