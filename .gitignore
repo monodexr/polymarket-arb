@@ -1,3 +1,5 @@
 /target
 .env
 *.log
+arb-dashboard/app/node_modules/
+arb-dashboard/app/dist/

@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes flash-chip { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(217,119,6,0.3); } 50% { box-shadow: 0 0 16px rgba(217,119,6,0.6); } }
+@keyframes pulse-red { 0%,100% { box-shadow: 0 0 8px rgba(217,37,37,0.3); } 50% { box-shadow: 0 0 16px rgba(217,37,37,0.6); } }
+@keyframes pulse-green { 0%,100% { box-shadow: 0 0 8px rgba(43,138,62,0.3); } 50% { box-shadow: 0 0 16px rgba(43,138,62,0.5); } }
+@keyframes flash-green { 0% { box-shadow: 0 0 20px rgba(43,138,62,0.6); } 100% { box-shadow: none; } }
+
+*::-webkit-scrollbar { width: 3px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; }
