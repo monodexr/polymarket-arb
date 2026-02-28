@@ -89,11 +89,19 @@ export default function ArbDashboard() {
   const balance = status?.balance ?? 0;
   const seed = status?.seed ?? 0;
   const trades = status?.trades ?? { wins: 0, losses: 0, open: 0, total_pnl: 0, session_pnl: 0, daily_pnl: 0, avg_edge: 0, avg_latency_ms: 0 };
-  const markets = status?.markets ?? [];
-  const feeds = status?.feeds ?? {};
-  const feedEntries = Object.entries(feeds);
-  const feedsConnected = feedEntries.filter(([, f]) => f.connected).length;
-  const feedsTotal = feedEntries.length;
+  const markets: ArbMarket[] = status?.markets ?? (status as any)?.current_windows ?? [];
+  const rawFeeds = status?.feeds ?? {};
+  const feedsConnected = useMemo(() => {
+    const f = rawFeeds as any;
+    if (f.binance_connected !== undefined) return f.binance_connected ? 1 : 0;
+    return Object.values(f).filter((v: any) => v?.connected).length;
+  }, [rawFeeds]);
+  const feedsTotal = useMemo(() => {
+    const f = rawFeeds as any;
+    if (f.binance_connected !== undefined) return 1;
+    return Object.keys(f).length;
+  }, [rawFeeds]);
+  const feedLatency = (rawFeeds as any)?.binance_latency_ms ?? (trades as any)?.avg_latency_ms ?? 0;
   const dailyCap = status?.daily_cap ?? { limit: 0, used_pct: 0 };
 
   const edgeState = useMemo(() => {
@@ -293,8 +301,8 @@ export default function ArbDashboard() {
                   </div>
                 </div>
                 <div style={{ fontFamily: mono, fontSize: "9px", color: "rgba(255,255,255,0.5)", display: "flex", gap: "10px" }}>
-                  <span>feeds: <span style={{ color: feedsConnected === feedsTotal ? "#2B8A3E" : "#D92525", fontWeight: 600 }}>{feedsConnected}/{feedsTotal}</span></span>
-                  <span>latency: <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>{trades.avg_latency_ms}ms</span></span>
+                  <span>feeds: <span style={{ color: feedsConnected === feedsTotal && feedsTotal > 0 ? "#2B8A3E" : "#D92525", fontWeight: 600 }}>{feedsConnected}/{feedsTotal || "—"}</span></span>
+                  <span>latency: <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>{feedLatency > 0 ? `${feedLatency}ms` : "—"}</span></span>
                 </div>
                 <div style={{ fontFamily: mono, fontSize: "9px", color: "rgba(255,255,255,0.5)" }}>
                   BTC: <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>{formatPrice(status?.spot_price ?? 0)}</span>
@@ -467,8 +475,8 @@ export default function ArbDashboard() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 {[
                   { val: trades.wins + trades.losses > 0 ? `${Math.round((trades.wins / (trades.wins + trades.losses)) * 100)}%` : "—", lbl: "Win Rate" },
-                  { val: trades.avg_latency_ms > 0 ? `${trades.avg_latency_ms}ms` : "—", lbl: "Latency" },
-                  { val: trades.avg_edge > 0 ? `${trades.avg_edge.toFixed(1)}%` : "—", lbl: "Avg Edge" },
+                  { val: feedLatency > 0 ? `${feedLatency}ms` : "—", lbl: "Latency" },
+                  { val: (trades as any).avg_edge > 0 ? `${(trades as any).avg_edge.toFixed(1)}%` : "—", lbl: "Avg Edge" },
                   { val: feedsTotal > 0 ? `${feedsConnected}/${feedsTotal}` : "—", lbl: "Feeds" },
                 ].map((item, i) => (
                   <div key={i} style={{ background: "transparent", padding: "8px", borderRadius: "4px", border: `1px solid ${borderStrong}` }}>
