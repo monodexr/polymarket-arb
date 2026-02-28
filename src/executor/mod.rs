@@ -74,9 +74,15 @@ async fn execute_signal<S: Signer + Send + Sync>(
         .context("parsing token_id as U256")?;
 
     let price = Decimal::from_f64(signal.price)
-        .context("invalid price")?;
+        .context("invalid price")?
+        .round_dp(2);
     let size = Decimal::from_f64(signal.size_usd / signal.price)
-        .context("invalid size")?;
+        .context("invalid size")?
+        .round_dp(2);
+
+    if size <= Decimal::ZERO {
+        return Ok(());
+    }
 
     info!(
         event = "PLACING_ORDER",
