@@ -9,6 +9,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StrategyConfig {
+    #[serde(default)]
+    pub seed_usd: f64,
     pub min_edge: f64,
     pub min_move_pct: f64,
     pub max_position_pct: f64,
@@ -37,5 +39,10 @@ impl Config {
     pub fn private_key(&self) -> Result<String> {
         std::env::var("POLYMARKET_PRIVATE_KEY")
             .with_context(|| "POLYMARKET_PRIVATE_KEY env var not set")
+    }
+
+    pub fn proxy_wallet(&self) -> Result<String> {
+        std::env::var("POLYMARKET_PROXY_WALLET")
+            .with_context(|| "POLYMARKET_PROXY_WALLET env var not set")
     }
 }
