@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 polymarket-client-sdk = { version = "0.4", features = [
-    "clob", "ws", "gamma", "rtds", "heartbeats", "tracing"
+    "clob", "ws", "gamma", "rtds", "tracing"
 ] }
 
 tokio = { version = "1", features = ["full"] }
