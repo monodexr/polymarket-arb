@@ -153,13 +153,23 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
                 .unwrap_or("")
                 .to_string();
 
-            let tokens = match mkt.get("clobTokenIds").and_then(|t| t.as_array()) {
-                Some(t) if t.len() >= 2 => t,
+            // clobTokenIds is a JSON string containing an array, not an array directly
+            let token_ids: Vec<String> = match mkt.get("clobTokenIds") {
+                Some(serde_json::Value::Array(arr)) => {
+                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+                }
+                Some(serde_json::Value::String(s)) => {
+                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
+                }
                 _ => continue,
             };
 
-            let yes_token = tokens[0].as_str().unwrap_or("").to_string();
-            let no_token = tokens[1].as_str().unwrap_or("").to_string();
+            if token_ids.len() < 2 {
+                continue;
+            }
+
+            let yes_token = token_ids[0].clone();
+            let no_token = token_ids[1].clone();
 
             if yes_token.is_empty() || no_token.is_empty() {
                 continue;
