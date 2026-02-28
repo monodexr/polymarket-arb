@@ -1,0 +1,38 @@
+[package]
+name = "polymarket-arb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+polymarket-client-sdk = { version = "0.4", features = [
+    "clob", "ws", "gamma", "rtds", "heartbeats", "tracing"
+] }
+
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+
+statrs = "0.17"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+clap = { version = "4", features = ["derive"] }
+
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+url = "2"
+regex = "1"
+rust_decimal = { version = "1", features = ["serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
