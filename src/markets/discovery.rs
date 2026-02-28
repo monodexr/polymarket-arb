@@ -22,35 +22,14 @@ pub type MarketSnapshot = HashMap<String, Market>;
 pub type MarketStateTx = watch::Sender<MarketSnapshot>;
 pub type MarketStateRx = watch::Receiver<MarketSnapshot>;
 
-/// Fee check results cached per token_id to avoid redundant HTTP requests (H3 fix).
-struct FeeCache {
-    cache: HashMap<String, bool>,
-}
-
-impl FeeCache {
-    fn new() -> Self {
-        Self { cache: HashMap::new() }
-    }
-
-    async fn is_fee_free(&mut self, client: &reqwest::Client, token_id: &str) -> bool {
-        if let Some(&cached) = self.cache.get(token_id) {
-            return cached;
-        }
-        let result = check_fee_free(client, token_id).await;
-        self.cache.insert(token_id.to_string(), result);
-        result
-    }
-}
-
 pub fn spawn(cfg: Config) -> MarketStateRx {
     let (tx, rx) = watch::channel(MarketSnapshot::new());
 
     tokio::spawn(async move {
         let interval = std::time::Duration::from_secs(cfg.discovery.poll_interval_secs);
-        let mut fee_cache = FeeCache::new();
 
         loop {
-            match discover_markets(&cfg, &mut fee_cache).await {
+            match discover_markets(&cfg).await {
                 Ok(markets) => {
                     let count = markets.len();
                     let mut snapshot = MarketSnapshot::new();
@@ -86,7 +65,7 @@ fn parse_strike(text: &str) -> Option<f64> {
     if value > 0.0 { Some(value) } else { None }
 }
 
-async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Result<Vec<Market>> {
+async fn discover_markets(cfg: &Config) -> anyhow::Result<Vec<Market>> {
     let client = reqwest::Client::new();
 
     // Paginate to get all active events (100 per page)
@@ -218,7 +197,18 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
                 continue;
             }
 
-            info!(question, strike, %expiry, "candidate market found");
+            // Use feesEnabled from Gamma response (more reliable than CLOB fee-rate endpoint)
+            let fees_enabled = mkt
+                .get("feesEnabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true); // assume fees if field missing
+
+            if fees_enabled {
+                info!(question, "fees enabled, skipping");
+                continue;
+            }
+
+            info!(question, strike, %expiry, "candidate market found (fee-free)");
 
             candidates.push((
                 Market {
@@ -235,73 +225,11 @@ async fn discover_markets(cfg: &Config, fee_cache: &mut FeeCache) -> anyhow::Res
         }
     }
 
-    // H3: Parallel fee checks with semaphore, using cache for previously seen tokens
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
-    let client_ref = &client;
+    // Fee check is now done inline via feesEnabled field from Gamma
+    // All candidates that reach here are already fee-free
+    let markets: Vec<Market> = candidates.into_iter().map(|(m, _)| m).collect();
 
-    let mut fee_futures = Vec::new();
-    let mut cached_results: Vec<(usize, bool)> = Vec::new();
-
-    for (i, (_, token)) in candidates.iter().enumerate() {
-        if let Some(&cached) = fee_cache.cache.get(token) {
-            cached_results.push((i, cached));
-        } else {
-            let sem = sem.clone();
-            let token = token.clone();
-            fee_futures.push(async move {
-                let _permit = sem.acquire().await.unwrap();
-                let result = check_fee_free(client_ref, &token).await;
-                (i, token, result)
-            });
-        }
-    }
-
-    let fresh_results = futures_util::future::join_all(fee_futures).await;
-
-    // Update cache with fresh results
-    for (_, token, result) in &fresh_results {
-        fee_cache.cache.insert(token.clone(), *result);
-    }
-
-    let mut fee_ok: HashMap<usize, bool> = HashMap::new();
-    for (i, ok) in cached_results {
-        fee_ok.insert(i, ok);
-    }
-    for (i, _, result) in fresh_results {
-        fee_ok.insert(i, result);
-    }
-
-    let markets: Vec<Market> = candidates
-        .into_iter()
-        .enumerate()
-        .filter(|(i, (m, _))| {
-            let ok = fee_ok.get(i).copied().unwrap_or(false);
-            if !ok {
-                info!(market = %m.title, "fee check failed, not fee-free");
-            }
-            ok
-        })
-        .map(|(_, (m, _))| m)
-        .collect();
-
-    info!(candidates_passed = markets.len(), "fee check complete");
+    info!(markets_found = markets.len(), "discovery complete");
     Ok(markets)
 }
 
-async fn check_fee_free(client: &reqwest::Client, token_id: &str) -> bool {
-    let url = format!(
-        "https://clob.polymarket.com/fee-rate?tokenID={}",
-        token_id
-    );
-    match client.get(&url).send().await {
-        Ok(resp) => match resp.json::<serde_json::Value>().await {
-            Ok(v) => {
-                let taker = v.get("taker").and_then(|t| t.as_f64()).unwrap_or(1.0);
-                let maker = v.get("maker").and_then(|m| m.as_f64()).unwrap_or(1.0);
-                taker == 0.0 && maker == 0.0
-            }
-            Err(_) => false,
-        },
-        Err(_) => false,
-    }
-}
