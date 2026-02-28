@@ -1,0 +1,17 @@
+services:
+  dashboard:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ${ARB_DATA_DIR:-../data}:/app/data:ro
+    ports:
+      - "8081:8081"
+    environment:
+      - DASHBOARD_PORT=8081
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://dashboard:8081
+    depends_on:
+      - dashboard
