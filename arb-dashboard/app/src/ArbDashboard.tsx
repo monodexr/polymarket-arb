@@ -198,6 +198,18 @@ export default function ArbDashboard() {
   }, [markets]);
 
   const liveAlerts = useMemo(() => {
+    const fmtSlug = (slug: string): string => {
+      const m = slug.match(/(\d+)m-(\d{9,})$/);
+      if (!m) return slug;
+      const durMin = parseInt(m[1]);
+      const startTs = parseInt(m[2]);
+      if (isNaN(startTs)) return slug;
+      const s = new Date(startTs * 1000);
+      const e = new Date((startTs + durMin * 60) * 1000);
+      const tf = (d: Date) => d.toLocaleTimeString("en-US", { hour12: false, hour: "numeric", minute: "2-digit" });
+      return `${durMin}m • ${tf(s)}–${tf(e)}`;
+    };
+
     return alerts.slice(-150).reverse().map(a => {
       const cat = a.category ?? "";
       const raw = a.message ?? "";
@@ -211,7 +223,13 @@ export default function ArbDashboard() {
       const windowOpenMatch = raw.match(/^(\w+)\s+window opened:\s*(.*)$/i);
       const windowCloseMatch = raw.match(/^(\w+)\s+window closed:\s*(.*)$/i);
       if (windowOpenMatch) {
-        message = `${windowOpenMatch[1]} 🎬 · ${windowOpenMatch[2]}`;
+        const rest = windowOpenMatch[2];
+        const slugPrice = rest.match(/^(\S+)\s*@\s*(.+)$/);
+        if (slugPrice) {
+          message = `${windowOpenMatch[1]} 🎬 · ${fmtSlug(slugPrice[1])} @${slugPrice[2].trim()}`;
+        } else {
+          message = `${windowOpenMatch[1]} 🎬 · ${rest}`;
+        }
       } else if (windowCloseMatch) {
         message = `${windowCloseMatch[1]} 🧤 · ${windowCloseMatch[2]}`;
       } else {
