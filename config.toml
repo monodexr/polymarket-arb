@@ -1,5 +1,4 @@
 [strategy]
-seed_usd = 0.0            # initial USDC deposit — set this to your starting balance
 min_edge = 0.03           # $0.03 absolute divergence threshold
 min_move_pct = 0.001      # ignore BTC moves < 0.1%
 max_position_pct = 0.005  # 0.5% of bankroll per trade

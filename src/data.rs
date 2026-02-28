@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -18,34 +17,11 @@ pub fn is_paused() -> bool {
     Path::new("data/pause.flag").exists()
 }
 
-// --- Shared live stats (balance + trade counters) ---
-
-#[derive(Default)]
-pub struct LiveStats {
-    pub balance: f64,
-    pub session_start_balance: f64,
-    pub wins: u64,
-    pub losses: u64,
-    pub open: u64,
-    pub total_pnl: f64,
-    pub session_pnl: f64,
-    pub daily_pnl: f64,
-    pub daily_reset_epoch: u64,
-}
-
-pub type SharedLiveStats = Arc<Mutex<LiveStats>>;
-
-pub fn new_shared_live_stats() -> SharedLiveStats {
-    Arc::new(Mutex::new(LiveStats::default()))
-}
-
 // --- status.json ---
 
 #[derive(Serialize)]
 pub struct Status {
     pub timestamp: f64,
-    pub balance: f64,
-    pub seed: f64,
     pub spot_price: f64,
     pub spot_source: &'static str,
     pub current_windows: Vec<WindowStatus>,
@@ -78,7 +54,7 @@ pub struct FeedStatus {
     pub binance_latency_ms: u64,
 }
 
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Default)]
 pub struct TradeStats {
     pub wins: u64,
     pub losses: u64,
@@ -147,37 +123,6 @@ pub fn alert(severity: &str, category: &str, message: &str, data: serde_json::Va
         .create(true)
         .append(true)
         .open("data/alerts.jsonl")
-    {
-        let _ = writeln!(f, "{}", line);
-    }
-}
-
-// --- trades.jsonl ---
-
-#[derive(Serialize)]
-pub struct TradeRecord {
-    pub timestamp: f64,
-    pub market: String,
-    pub side: String,
-    pub entry_price: f64,
-    pub exit_price: f64,
-    pub edge_pct: f64,
-    pub pnl: f64,
-    pub duration_sec: f64,
-    pub outcome: String,
-}
-
-pub fn write_trade(trade: &TradeRecord) {
-    let line = match serde_json::to_string(trade) {
-        Ok(j) => j,
-        Err(_) => return,
-    };
-
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("data/trades.jsonl")
     {
         let _ = writeln!(f, "{}", line);
     }
