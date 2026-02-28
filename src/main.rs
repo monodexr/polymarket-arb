@@ -89,18 +89,19 @@ async fn main() -> Result<()> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let ps = status_price_rx.borrow();
+            let btc_price = ps.spot_price("btc");
             let windows = {
                 let guard = status_windows.lock().unwrap();
                 guard.clone()
             };
             let status = data::Status {
                 timestamp: discovery::now_secs(),
-                spot_price: ps.spot_price,
+                spot_price: btc_price,
                 spot_source: "binance",
                 current_windows: windows,
                 feeds: data::FeedStatus {
-                    binance_connected: ps.spot_price > 0.0,
-                    binance_price: ps.spot_price,
+                    binance_connected: !ps.prices.is_empty(),
+                    binance_price: btc_price,
                     binance_latency_ms: 0,
                 },
                 trades: data::TradeStats::default(),
@@ -198,7 +199,7 @@ async fn run_asset_loop(
             tokio::time::sleep(std::time::Duration::from_secs_f64(wait_for_open)).await;
         }
 
-        let open_price = price_rx.borrow().spot_price;
+        let open_price = price_rx.borrow().spot_price(&asset);
         if open_price <= 0.0 {
             warn!(asset = %asset, "no spot price at window open, skipping");
             continue;
@@ -241,7 +242,7 @@ async fn run_asset_loop(
                 }
             }
 
-            let spot = price_watch.borrow().spot_price;
+            let spot = price_watch.borrow().spot_price(&asset);
             let books = book_watch.borrow().clone();
 
             let mut events = divergence::evaluate(
@@ -287,7 +288,7 @@ async fn run_asset_loop(
         }
 
         // Window ended
-        let move_pct = (price_rx.borrow().spot_price - open_price) / open_price;
+        let move_pct = (price_rx.borrow().spot_price(&asset) - open_price) / open_price;
         info!(
             asset = %asset,
             slug = %window.slug,

@@ -1,14 +1,27 @@
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::PriceTick;
 
+/// Per-asset price state. Keys are asset names ("btc", "eth", "sol", "xrp").
 #[derive(Debug, Clone, Default)]
 pub struct PriceState {
-    pub spot_price: f64,
+    pub prices: HashMap<String, AssetPrice>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssetPrice {
+    pub price: f64,
     pub timestamp_ms: u64,
+}
+
+impl PriceState {
+    pub fn spot_price(&self, asset: &str) -> f64 {
+        self.prices.get(asset).map(|p| p.price).unwrap_or(0.0)
+    }
 }
 
 pub fn spawn(
@@ -17,6 +30,8 @@ pub fn spawn(
     stale_secs: u64,
 ) {
     tokio::spawn(async move {
+        let mut first_tick = true;
+
         while let Some(tick) = tick_rx.recv().await {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -29,13 +44,20 @@ pub fn spawn(
                 continue;
             }
 
-            let state = PriceState {
-                spot_price: tick.price,
-                timestamp_ms: tick.timestamp_ms,
-            };
+            if first_tick {
+                info!(source = tick.source, price = %format!("{:.2}", tick.price), "first price tick received");
+                first_tick = false;
+            }
 
-            debug!(spot = %format!("{:.2}", tick.price), "price update");
-            let _ = price_tx.send(state);
+            price_tx.send_modify(|state| {
+                state.prices.insert(
+                    tick.source.to_string(),
+                    AssetPrice {
+                        price: tick.price,
+                        timestamp_ms: tick.timestamp_ms,
+                    },
+                );
+            });
         }
     });
 }
