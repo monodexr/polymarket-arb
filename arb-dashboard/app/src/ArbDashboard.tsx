@@ -20,7 +20,7 @@ function ContractCard({ market, now, isDark }: { market: ArbMarket; now: number;
   const borderColor = st === "divergence" ? "#D97706" : st === "executing" ? "#D92525" : st === "filled" ? "#2B8A3E" : st === "converged" ? "#2B8A3E" : isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.08)";
   const bgTint = st === "divergence" ? "rgba(217,119,6,0.03)" : st === "executing" ? "rgba(217,37,37,0.04)" : st === "filled" ? "rgba(43,138,62,0.03)" : "transparent";
   const glowAnim = st === "divergence" ? "pulse-glow 2s ease-in-out infinite" : st === "executing" ? "pulse-red 1.2s ease-in-out infinite" : st === "filled" ? "pulse-green 2s ease-in-out infinite" : st === "converged" ? "flash-green 1s ease-out" : "none";
-  const edgeColor = market.edge_pct > 0.3 ? "#2B8A3E" : isDark ? "#666677" : "#888888";
+  const edgeColor = (market.edge_pct ?? 0) > 0.3 ? "#2B8A3E" : isDark ? "#666677" : "#888888";
   const divDuration = market.divergence_open && market.divergence_since ? Math.max(0, now / 1000 - market.divergence_since) : 0;
   const barPct = Math.min(100, (divDuration / 10) * 100);
   const barColor = divDuration > 10 ? "#D97706" : "#2B8A3E";
@@ -40,16 +40,16 @@ function ContractCard({ market, now, isDark }: { market: ArbMarket; now: number;
       transition: "border-color 0.3s, background 0.3s",
     }}>
       <div style={{ fontFamily: mono, fontSize: "11px", fontWeight: 700, color: inkPrimary, lineHeight: 1.2 }}>
-        {market.title}
+        {market.title ?? "Unknown Market"}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: "10px" }}>
-        <span style={{ color: inkDim }}>fair: <span style={{ color: inkPrimary, fontWeight: 600 }}>{market.fair_value.toFixed(2)}</span></span>
-        <span style={{ color: inkDim }}>CLOB: <span style={{ color: inkPrimary, fontWeight: 600 }}>{market.clob_mid.toFixed(2)}</span></span>
+        <span style={{ color: inkDim }}>fair: <span style={{ color: inkPrimary, fontWeight: 600 }}>{(market.fair_value ?? 0).toFixed(2)}</span></span>
+        <span style={{ color: inkDim }}>CLOB: <span style={{ color: inkPrimary, fontWeight: 600 }}>{(market.clob_mid ?? 0).toFixed(2)}</span></span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontFamily: mono, fontSize: "10px", fontWeight: 700, color: edgeColor }}>
-          edge: {formatEdge(market.edge_pct)}
-          {market.edge_pct > 0.3 && <span style={{ marginLeft: "4px", display: "inline-block", width: "5px", height: "5px", borderRadius: "50%", background: edgeColor, animation: st === "executing" ? "flash-chip 0.8s infinite" : undefined }} />}
+          edge: {formatEdge(market.edge_pct ?? 0)}
+          {(market.edge_pct ?? 0) > 0.3 && <span style={{ marginLeft: "4px", display: "inline-block", width: "5px", height: "5px", borderRadius: "50%", background: edgeColor, animation: st === "executing" ? "flash-chip 0.8s infinite" : undefined }} />}
         </span>
         {st !== "scanning" && (
           <span style={{ fontFamily: mono, fontSize: "8px", fontWeight: 600, color: borderColor, textTransform: "uppercase", letterSpacing: "0.5px" }}>
@@ -472,7 +472,7 @@ export default function ArbDashboard() {
                 {[
                   { val: trades.wins + trades.losses > 0 ? `${Math.round((trades.wins / (trades.wins + trades.losses)) * 100)}%` : "—", lbl: "Win Rate" },
                   { val: feedLatency > 0 ? `${feedLatency}ms` : "—", lbl: "Latency" },
-                  { val: (trades as any).avg_edge > 0 ? `${(trades as any).avg_edge.toFixed(1)}%` : "—", lbl: "Avg Edge" },
+                  { val: (trades as any)?.avg_edge > 0 ? `${Number((trades as any).avg_edge).toFixed(1)}%` : "—", lbl: "Avg Edge" },
                   { val: feedsTotal > 0 ? `${feedsConnected}/${feedsTotal}` : "—", lbl: "Feeds" },
                 ].map((item, i) => (
                   <div key={i} style={{ background: "transparent", padding: "8px", borderRadius: "4px", border: `1px solid ${borderStrong}` }}>
