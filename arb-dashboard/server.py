@@ -19,6 +19,7 @@ if not DIST_DIR.exists():
     DIST_DIR = DASHBOARD_DIR / "app" / "dist"
 STATIC_DIR = DIST_DIR if DIST_DIR.exists() else DASHBOARD_DIR
 PAUSE_FLAG = DATA / "pause.flag"
+PNL_CONFIG = DATA / "pnl_config.json"
 PORT = int(os.environ.get("DASHBOARD_PORT", "8081"))
 
 
@@ -46,6 +47,79 @@ def load_jsonl(path: Path, tail: int = 500) -> list:
     return entries
 
 
+def load_pnl_config() -> dict:
+    """Read pnl_config.json for seed and wallet info."""
+    return load_json(PNL_CONFIG, {"seed_usd": 0})
+
+
+def compute_trade_pnl(trades: list) -> dict:
+    """Compute PnL metrics from trades.jsonl entries."""
+    wins = sum(1 for t in trades if t.get("outcome") == "converged")
+    losses = sum(1 for t in trades if t.get("outcome") == "adverse")
+    open_count = sum(1 for t in trades if t.get("outcome") == "open")
+    total_pnl = sum(t.get("pnl", 0) or 0 for t in trades)
+
+    now = time.time()
+    day_start = now - 86400
+    daily_pnl = sum(
+        t.get("pnl", 0) or 0
+        for t in trades
+        if (t.get("timestamp", 0) or 0) >= day_start
+    )
+
+    return {
+        "wins": wins,
+        "losses": losses,
+        "open": open_count,
+        "total_pnl": round(total_pnl, 2),
+        "daily_pnl": round(daily_pnl, 2),
+    }
+
+
+def enrich_status(status: dict) -> dict:
+    """Inject PnL data from config and trades.jsonl when bot doesn't provide it."""
+    pnl_cfg = load_pnl_config()
+    seed = pnl_cfg.get("seed_usd", 0)
+
+    if not status.get("seed") and seed > 0:
+        status["seed"] = seed
+
+    trades_data = load_jsonl(DATA / "trades.jsonl", 5000)
+    if trades_data:
+        computed = compute_trade_pnl(trades_data)
+        existing_trades = status.get("trades", {})
+
+        if not existing_trades.get("wins") and not existing_trades.get("losses"):
+            status["trades"] = {
+                **existing_trades,
+                **computed,
+                "session_pnl": existing_trades.get("session_pnl", computed["total_pnl"]),
+                "avg_edge": existing_trades.get("avg_edge", 0),
+                "avg_latency_ms": existing_trades.get("avg_latency_ms", 0),
+            }
+
+    balance = status.get("balance", 0)
+    seed_val = status.get("seed", seed)
+
+    # Ground truth PnL: balance - seed (only when bot reports a real balance)
+    if balance > 0 and seed_val > 0:
+        trades_block = status.get("trades", {})
+        if not trades_block.get("total_pnl"):
+            trades_block["total_pnl"] = round(balance - seed_val, 2)
+            status["trades"] = trades_block
+
+    # If balance is 0 but seed is set, don't show false negative —
+    # use trade-computed PnL or just 0 (fresh wallet, no data yet)
+    if balance == 0 and seed_val > 0:
+        trades_block = status.get("trades", {})
+        if trades_block.get("total_pnl", 0) == 0 and trades_data:
+            trades_block["total_pnl"] = computed.get("total_pnl", 0)
+        status["balance"] = seed_val + trades_block.get("total_pnl", 0)
+        status["trades"] = trades_block
+
+    return status
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -55,7 +129,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         if path == "/api/status":
-            self._send_json(load_json(DATA / "status.json", {}))
+            status = load_json(DATA / "status.json", {})
+            self._send_json(enrich_status(status))
         elif path == "/api/alerts":
             raw = load_jsonl(DATA / "alerts.jsonl", 500)
             kept = []
@@ -122,7 +197,7 @@ class Handler(SimpleHTTPRequestHandler):
                     mt = status_path.stat().st_mtime
                     if mt > last_status_mtime:
                         last_status_mtime = mt
-                        status = load_json(status_path, {})
+                        status = enrich_status(load_json(status_path, {}))
                         self.wfile.write(f"event: status\ndata: {json.dumps(status)}\n\n".encode())
                         changed = True
 
@@ -164,5 +239,10 @@ if __name__ == "__main__":
     print(f"Arb dashboard serving on http://0.0.0.0:{PORT}")
     print(f"Data dir: {DATA.resolve()}")
     print(f"Static dir: {STATIC_DIR.resolve()}")
+    if PNL_CONFIG.exists():
+        cfg = load_pnl_config()
+        print(f"PnL config: seed=${cfg.get('seed_usd', 0):.2f}")
+    else:
+        print(f"No pnl_config.json found at {PNL_CONFIG} — create one with {{\"seed_usd\": YOUR_AMOUNT}}")
     server = ThreadedHTTPServer(("0.0.0.0", PORT), Handler)
     server.serve_forever()
