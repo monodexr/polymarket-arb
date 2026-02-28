@@ -245,20 +245,25 @@ async fn run_asset_loop(
             let spot = price_watch.borrow().spot_price(&asset);
             let books = book_watch.borrow().clone();
 
-            let mut events = divergence::evaluate(
+            let events = divergence::evaluate(
                 &windows, spot, &books, &cfg.strategy, &mut window_div_state,
             );
 
-            // H2 + M2: Size signals via RiskManager, gate with can_trade
-            for ev in &mut events {
-                if let DivEvent::Signal(ref mut sig) = ev {
-                    if !risk.can_trade() {
-                        continue;
+            // Size signals via RiskManager, drop signals that can't trade
+            let events: Vec<DivEvent> = events
+                .into_iter()
+                .filter_map(|ev| match ev {
+                    DivEvent::Signal(mut sig) => {
+                        if !risk.can_trade() {
+                            return None; // drop signal entirely
+                        }
+                        sig.size_usd = risk.position_size(sig.edge, sig.price);
+                        risk.record_fill(sig.size_usd);
+                        Some(DivEvent::Signal(sig))
                     }
-                    sig.size_usd = risk.position_size(sig.edge, sig.price);
-                    risk.record_fill(sig.size_usd);
-                }
-            }
+                    other => Some(other),
+                })
+                .collect();
 
             // M3: Update shared window state for status writer
             let fv_yes = fair_value::fair_yes(spot, window.open_price, window.time_remaining_frac());
