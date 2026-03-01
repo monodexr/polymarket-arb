@@ -81,10 +81,10 @@ async fn run_ws(
     token_ids: &[String],
     book_tx: &watch::Sender<BookSnapshot>,
 ) -> anyhow::Result<()> {
-    let (ws, _) = tokio_tungstenite::connect_async(
-        "wss://ws-subscriptions-clob.polymarket.com/ws/market",
-    )
-    .await?;
+    let clob_ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+    let tcp = tokio::net::TcpStream::connect("ws-subscriptions-clob.polymarket.com:443").await?;
+    tcp.set_nodelay(true)?;
+    let (ws, _) = tokio_tungstenite::client_async_tls(clob_ws_url, tcp).await?;
     let (mut write, mut read) = ws.split();
 
     let sub_msg = serde_json::json!({

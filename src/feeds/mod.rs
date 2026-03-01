@@ -1,6 +1,8 @@
 pub mod aggregator;
 pub mod binance;
 
+use std::time::Instant;
+
 use tokio::sync::{mpsc, watch};
 use tracing::info;
 
@@ -12,6 +14,7 @@ pub struct PriceTick {
     pub source: &'static str,
     pub price: f64,
     pub timestamp_ms: u64,
+    pub received_at: Instant,
 }
 
 pub fn spawn_all(price_tx: watch::Sender<PriceState>, cfg: &Config) {

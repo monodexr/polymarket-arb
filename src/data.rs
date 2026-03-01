@@ -50,6 +50,7 @@ pub struct Status {
     pub spot_source: &'static str,
     pub current_windows: Vec<WindowStatus>,
     pub feeds: FeedStatus,
+    pub latency: LatencyStats,
     pub trades: TradeStats,
     pub recent_trades: Vec<serde_json::Value>,
 }
@@ -76,6 +77,14 @@ pub struct FeedStatus {
     pub binance_connected: bool,
     pub binance_price: f64,
     pub binance_latency_ms: u64,
+}
+
+#[derive(Serialize, Default, Clone)]
+pub struct LatencyStats {
+    pub last_tick_to_signal_ms: Option<f64>,
+    pub last_signal_to_order_ms: Option<f64>,
+    pub last_total_latency_ms: Option<f64>,
+    pub avg_total_latency_ms: Option<f64>,
 }
 
 #[derive(Serialize, Default, Clone)]

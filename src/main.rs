@@ -142,6 +142,7 @@ async fn main() -> Result<()> {
                     binance_price: btc_price,
                     binance_latency_ms: feed_latency,
                 },
+                latency: data::LatencyStats::default(),
                 trades: trade_stats,
                 recent_trades: load_recent_trades(50),
             };
@@ -290,11 +291,13 @@ async fn run_asset_loop(
             }
 
             let spot = price_watch.borrow().spot_price(&asset);
-            let books = book_watch.borrow().clone();
 
-            let events = divergence::evaluate(
-                &windows, spot, &books, &cfg.strategy, &mut window_div_state,
-            );
+            let events = {
+                let books = book_watch.borrow();
+                divergence::evaluate(
+                    &windows, spot, &*books, &cfg.strategy, &mut window_div_state,
+                )
+            };
 
             let events: Vec<DivEvent> = events
                 .into_iter()
@@ -312,8 +315,13 @@ async fn run_asset_loop(
                 .collect();
 
             let fv_yes = fair_value::fair_yes(spot, window.open_price, window.time_remaining_frac());
-            let yes_mid = books.get(&window.yes_token).map(|b| b.mid).unwrap_or(0.0);
-            let no_mid = books.get(&window.no_token).map(|b| b.mid).unwrap_or(0.0);
+            let (yes_mid, no_mid) = {
+                let books = book_watch.borrow();
+                (
+                    books.get(&window.yes_token).map(|b| b.mid).unwrap_or(0.0),
+                    books.get(&window.no_token).map(|b| b.mid).unwrap_or(0.0),
+                )
+            };
             let move_pct = if open_price > 0.0 { (spot - open_price) / open_price } else { 0.0 };
 
             update_window_state(&window_states, &asset, Some(WindowStatus {
