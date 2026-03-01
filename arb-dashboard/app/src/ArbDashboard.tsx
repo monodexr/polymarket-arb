@@ -189,7 +189,18 @@ export default function ArbDashboard() {
   const feedsTotal = rawFeeds.binance_connected !== undefined
     ? 1
     : Math.max(1, Object.keys(rawFeeds).filter(k => !k.includes('_')).length);
-  const feedLatency = (rawFeeds as any)?.binance_latency_ms ?? (trades as any)?.avg_latency_ms ?? 0;
+  const latencyData = (status as any)?.latency ?? {};
+  const tradeLatency: number | null = latencyData.last_total_latency_ms ?? null;
+  const avgTradeLatency: number | null = latencyData.avg_total_latency_ms ?? null;
+  const computeLatency: number | null = latencyData.last_tick_to_signal_ms ?? null;
+  const executeLatency: number | null = latencyData.last_signal_to_order_ms ?? null;
+  const feedLatency = latencyData.feed_latency_ms ?? (rawFeeds as any)?.binance_latency_ms ?? 0;
+  const primaryLatency = tradeLatency ?? (feedLatency > 0 ? feedLatency : null);
+  const latencyColor = primaryLatency == null ? "#666677"
+    : primaryLatency < 30 ? "#2B8A3E"
+    : primaryLatency < 100 ? "#D97706"
+    : primaryLatency < 200 ? "#FF6B00"
+    : "#D92525";
   const dailyCap = status?.daily_cap ?? { limit: 0, used_pct: 0 };
 
   const edgeState = (() => {
@@ -398,7 +409,7 @@ export default function ArbDashboard() {
                 </div>
                 <div style={{ fontFamily: MONO, fontSize: "9px", color: "rgba(255,255,255,0.5)", display: "flex", gap: "8px" }}>
                   <span>feeds: <span style={{ color: feedsConnected === feedsTotal && feedsTotal > 0 ? "#2B8A3E" : "#D92525", fontWeight: 600 }}>{feedsConnected}/{feedsTotal || "—"}</span></span>
-                  <span>latency: <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>{feedLatency > 0 ? `${feedLatency}ms` : "—"}</span></span>
+                  <span>latency: <span style={{ fontWeight: 600, color: latencyColor }}>{primaryLatency != null ? `${Math.round(primaryLatency)}ms` : "—"}</span></span>
                 </div>
                 <div style={{ fontFamily: MONO, fontSize: "9px", color: "rgba(255,255,255,0.5)" }}>
                   BTC: <span style={{ fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>{formatPrice(status?.spot_price ?? 0)}</span>
@@ -544,13 +555,13 @@ export default function ArbDashboard() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 {[
-                  { val: trades.wins + trades.losses > 0 ? `${Math.round((trades.wins / (trades.wins + trades.losses)) * 100)}%` : "—", lbl: "Win Rate" },
-                  { val: feedLatency > 0 ? `${feedLatency}ms` : "—", lbl: "Latency" },
-                  { val: (trades as any)?.avg_edge > 0 ? `${Number((trades as any).avg_edge).toFixed(1)}%` : "—", lbl: "Avg Edge" },
-                  { val: feedsTotal > 0 ? `${feedsConnected}/${feedsTotal}` : "—", lbl: "Feeds" },
+                  { val: trades.wins + trades.losses > 0 ? `${Math.round((trades.wins / (trades.wins + trades.losses)) * 100)}%` : "—", lbl: "Win Rate", color: inkPrimary },
+                  { val: primaryLatency != null ? `${Math.round(primaryLatency)}ms` : "—", lbl: tradeLatency != null ? "Trade Latency" : "Feed Latency", color: latencyColor },
+                  { val: avgTradeLatency != null ? `${Math.round(avgTradeLatency)}ms` : (trades as any)?.avg_edge > 0 ? `${Number((trades as any).avg_edge).toFixed(1)}%` : "—", lbl: avgTradeLatency != null ? "Avg Latency" : "Avg Edge", color: inkPrimary },
+                  { val: feedsTotal > 0 ? `${feedsConnected}/${feedsTotal}` : "—", lbl: "Feeds", color: inkPrimary },
                 ].map((item, i) => (
                   <div key={i} style={{ background: "transparent", padding: "8px", borderRadius: "4px", border: `1px solid ${borderStrong}` }}>
-                    <span style={{ fontFamily: MONO, fontSize: "16px", fontWeight: 700, color: inkPrimary, display: "block" }}>{item.val}</span>
+                    <span style={{ fontFamily: MONO, fontSize: "16px", fontWeight: 700, color: item.color, display: "block" }}>{item.val}</span>
                     <span style={{ fontSize: "9px", color: inkTertiary, textTransform: "uppercase" }}>{item.lbl}</span>
                   </div>
                 ))}
