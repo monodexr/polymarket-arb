@@ -30,12 +30,6 @@ if [ -z "${POLYMARKET_PRIVATE_KEY:-}" ]; then
     exit 1
 fi
 
-if [ -z "${POLYMARKET_PROXY_WALLET:-}" ]; then
-    echo "ERROR: POLYMARKET_PROXY_WALLET not set after sourcing $ENV_FILE"
-    echo "Add: export POLYMARKET_PROXY_WALLET=\"0x...\""
-    exit 1
-fi
-
 if [ ! -f "target/release/polymarket-arb" ]; then
     echo "ERROR: Binary not found. Run: cargo build --release"
     exit 1
