@@ -336,6 +336,8 @@ async fn run_asset_loop(
         }
 
         let move_pct = (price_rx.borrow().spot_price(&asset) - open_price) / open_price;
+        risk.record_close(0.0);
+
         info!(
             asset = %asset,
             slug = %window.slug,

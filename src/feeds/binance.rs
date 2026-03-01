@@ -12,7 +12,10 @@ const URL_US: &str = "wss://stream.binance.us:9443/stream?streams=btcusdt@trade/
 pub fn spawn(tx: mpsc::Sender<PriceTick>) {
     tokio::spawn(async move {
         loop {
-            for url in [URL_GLOBAL, URL_US] {
+            for (i, url) in [URL_GLOBAL, URL_US].iter().enumerate() {
+                if i > 0 {
+                    warn!(url, "FALLING BACK to secondary binance endpoint (higher latency)");
+                }
                 info!(url, "connecting binance WS");
                 match run(&tx, url).await {
                     Ok(()) => warn!(url, "binance WS closed, trying next"),

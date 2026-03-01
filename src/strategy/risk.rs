@@ -18,8 +18,13 @@ pub struct RiskManager {
 
 impl RiskManager {
     pub fn new(cfg: &Config) -> Self {
+        let initial_bankroll = if cfg.strategy.seed_usd > 0.0 {
+            cfg.strategy.seed_usd
+        } else {
+            100.0
+        };
         Self {
-            bankroll: 100.0, // Updated when we query balance
+            bankroll: initial_bankroll,
             max_position_pct: cfg.strategy.max_position_pct,
             max_daily_loss_pct: cfg.strategy.max_daily_loss_pct,
             max_open_positions: cfg.strategy.max_open_positions,
@@ -60,13 +65,12 @@ impl RiskManager {
         true
     }
 
-    pub fn position_size(&self, edge_pct: f64, _price: f64) -> f64 {
+    pub fn position_size(&self, edge: f64, price: f64) -> f64 {
         let base = self.bankroll * self.max_position_pct;
-        // Scale up slightly for larger edges (Kelly-lite)
-        let edge_mult = (edge_pct / 0.003).min(3.0);
+        let edge_mult = (edge / 0.05).min(2.0).max(1.0);
         let size = base * edge_mult;
-        // Don't buy more than what's reasonable at this price
-        size.min(self.bankroll * 0.02)
+        let max_shares = size / price.max(0.01);
+        (max_shares * price).min(self.bankroll * 0.02)
     }
 
     pub fn record_fill(&mut self, _size_usd: f64) {
