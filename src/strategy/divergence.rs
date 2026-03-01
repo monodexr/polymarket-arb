@@ -109,15 +109,17 @@ pub fn evaluate(
             continue;
         }
 
+        if yes_mid < 0.20 || no_mid < 0.20 {
+            continue;
+        }
+
         let yes_edge = fv_yes - yes_mid;
         let no_edge = fv_no - no_mid;
 
-        let (edge, side, token_id, price, fair, clob_mid) = if yes_edge > no_edge && yes_edge > cfg.min_edge {
-            let ask = yes_book.map(|b| b.best_ask).unwrap_or(0.0);
-            (yes_edge, Side::BuyYes, window.yes_token.clone(), ask, fv_yes, yes_mid)
+        let (edge, side, token_id, fair, clob_mid) = if yes_edge > no_edge && yes_edge > cfg.min_edge {
+            (yes_edge, Side::BuyYes, window.yes_token.clone(), fv_yes, yes_mid)
         } else if no_edge > cfg.min_edge {
-            let ask = no_book.map(|b| b.best_ask).unwrap_or(0.0);
-            (no_edge, Side::BuyNo, window.no_token.clone(), ask, fv_no, no_mid)
+            (no_edge, Side::BuyNo, window.no_token.clone(), fv_no, no_mid)
         } else {
             if let Some(div) = open_divs.remove(&window.slug) {
                 events.push(DivEvent::Converged {
@@ -129,7 +131,13 @@ pub fn evaluate(
             continue;
         };
 
-        if price <= 0.0 || price >= 1.0 {
+        if edge > 0.15 {
+            continue;
+        }
+
+        let price = (clob_mid + 0.01).min(fair - 0.01);
+
+        if price < 0.35 || price > 0.65 {
             continue;
         }
 
