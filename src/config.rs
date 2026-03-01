@@ -11,6 +11,8 @@ pub struct Config {
 pub struct StrategyConfig {
     #[serde(default)]
     pub seed_usd: f64,
+    #[serde(default)]
+    pub observe_only: bool,
     pub min_edge: f64,
     pub min_move_pct: f64,
     pub max_position_pct: f64,

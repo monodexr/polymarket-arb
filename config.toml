@@ -1,5 +1,6 @@
 [strategy]
 seed_usd = 83.0
+observe_only = true
 min_edge = 0.05
 min_move_pct = 0.001
 max_position_pct = 0.01

@@ -47,7 +47,9 @@ async fn main() -> Result<()> {
     logging::init();
     data::ensure_data_dir();
 
-    if cli.dry_run {
+    if cfg.strategy.observe_only {
+        info!("OBSERVE MODE — signals will be logged but no orders placed");
+    } else if cli.dry_run {
         info!("DRY RUN — signals will be logged but no orders placed");
     }
 
@@ -80,7 +82,7 @@ async fn main() -> Result<()> {
 
     drop(token_sub_tx);
 
-    if cli.dry_run {
+    if cli.dry_run || cfg.strategy.observe_only {
         logging::spawn_dry_run_logger(event_rx);
     } else {
         executor::spawn(event_rx, cfg.clone(), live_stats.clone()).await?;
@@ -335,8 +337,15 @@ async fn run_asset_loop(
             }
         }
 
-        let move_pct = (price_rx.borrow().spot_price(&asset) - open_price) / open_price;
+        let close_spot = price_rx.borrow().spot_price(&asset);
+        let move_pct = (close_spot - open_price) / open_price;
         risk.record_close(0.0);
+
+        let close_frac = 0.0_f64;
+        let fv_yes_close = fair_value::fair_yes(close_spot, open_price, close_frac);
+        let books_close = book_rx.borrow().clone();
+        let yes_mid_close = books_close.get(&window.yes_token).map(|b| b.mid).unwrap_or(0.0);
+        let no_mid_close = books_close.get(&window.no_token).map(|b| b.mid).unwrap_or(0.0);
 
         info!(
             asset = %asset,
@@ -345,11 +354,24 @@ async fn run_asset_loop(
             "window closed"
         );
 
-        data::alert("INFO", "arb.window_close",
-            &format!("{} window closed: {:.3}% move", asset.to_uppercase(), move_pct * 100.0),
+        let resolved = if move_pct > 0.0 { "UP" } else if move_pct < 0.0 { "DOWN" } else { "FLAT" };
+
+        data::alert("INFO", "arb.window_summary",
+            &format!("{} window: move {:.3}%, fair_yes={:.2}, clob_yes={:.2}, resolved={}",
+                asset.to_uppercase(), move_pct * 100.0, fv_yes_close, yes_mid_close, resolved),
             serde_json::json!({
-                "asset": asset, "slug": window.slug,
+                "market": window.slug,
+                "asset": asset,
+                "open_price": open_price,
+                "close_price": close_spot,
                 "move_pct": move_pct * 100.0,
+                "fair_yes_at_close": fv_yes_close,
+                "fair_no_at_close": 1.0 - fv_yes_close,
+                "clob_yes_mid": yes_mid_close,
+                "clob_no_mid": no_mid_close,
+                "edge_yes": fv_yes_close - yes_mid_close,
+                "edge_no": (1.0 - fv_yes_close) - no_mid_close,
+                "resolved": resolved,
             }));
 
         update_window_state(&window_states, &asset, None);
