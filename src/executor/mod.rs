@@ -11,7 +11,7 @@ use polymarket_client_sdk::clob::types::{
 };
 use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
 use polymarket_client_sdk::clob::{Client, Config as ClobConfig};
-use polymarket_client_sdk::types::{Address, Decimal, U256};
+use polymarket_client_sdk::types::{Decimal, U256};
 use polymarket_client_sdk::POLYGON;
 use rust_decimal::prelude::FromPrimitive;
 use tokio::sync::mpsc;
@@ -29,25 +29,20 @@ pub async fn spawn(
     live_stats: SharedLiveStats,
 ) -> Result<()> {
     let private_key = cfg.private_key()?;
-    let proxy_wallet = cfg.proxy_wallet()?;
     let order_timeout = Duration::from_secs(cfg.strategy.order_timeout_secs);
 
     let signer = LocalSigner::from_str(&private_key)
         .context("parsing private key")?
         .with_chain_id(Some(POLYGON));
 
-    let funder: Address = proxy_wallet.parse()
-        .context("parsing POLYMARKET_PROXY_WALLET address")?;
-
     let client: AuthClient = Client::new("https://clob.polymarket.com", ClobConfig::default())?
         .authentication_builder(&signer)
-        .funder(funder)
-        .signature_type(SignatureType::GnosisSafe)
+        .signature_type(SignatureType::Eoa)
         .authenticate()
         .await
         .context("CLOB authentication")?;
 
-    info!(proxy = %proxy_wallet, "CLOB authenticated with proxy wallet");
+    info!(eoa = %signer.address(), "CLOB authenticated as EOA");
 
     let refresh_req = BalanceAllowanceRequest::builder()
         .asset_type(AssetType::Collateral)
