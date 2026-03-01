@@ -4,6 +4,7 @@ mod executor;
 mod feeds;
 mod logging;
 mod markets;
+mod redemption;
 mod strategy;
 
 use std::collections::HashMap;

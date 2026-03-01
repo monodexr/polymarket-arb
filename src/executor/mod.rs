@@ -19,6 +19,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::data::{self, SharedLiveStats};
+use crate::redemption;
 use crate::strategy::divergence::{DivEvent, Signal};
 
 type AuthClient = Client<Authenticated<Normal>>;
@@ -43,6 +44,13 @@ pub async fn spawn(
         .context("CLOB authentication")?;
 
     info!(eoa = %signer.address(), "CLOB authenticated as EOA");
+
+    let (redeem_tx, redeem_rx) = mpsc::channel::<redemption::PendingPosition>(64);
+    redemption::spawn_redemption_loop(
+        private_key.clone(),
+        redeem_rx,
+        live_stats.clone(),
+    );
 
     let refresh_req = BalanceAllowanceRequest::builder()
         .asset_type(AssetType::Collateral)
@@ -91,6 +99,14 @@ pub async fn spawn(
                         error!(%e, market = %signal.market_name, "order execution failed");
                         let mut stats = live_stats.lock().unwrap();
                         stats.open = stats.open.saturating_sub(1);
+                    } else {
+                        let _ = redeem_tx.send(redemption::PendingPosition {
+                            condition_id: signal.condition_id.clone(),
+                            market_name: signal.market_name.clone(),
+                            side: signal.side.to_string(),
+                            entry_price: signal.price,
+                            size_usd: signal.size_usd,
+                        }).await;
                     }
                 }
                 DivEvent::Converged { market_name, duration_ms, peak_edge } => {
@@ -125,7 +141,7 @@ async fn execute_signal<S: Signer + Send + Sync>(
     signer: &S,
     signal: &Signal,
     positions: &mut positions::PositionTracker,
-    timeout: Duration,
+    _default_timeout: Duration,
 ) -> Result<()> {
     let token_id = U256::from_str(&signal.token_id)
         .context("parsing token_id as U256")?;
@@ -184,17 +200,19 @@ async fn execute_signal<S: Signer + Send + Sync>(
 
     positions.record_open(signal.clone());
 
+    let window_secs_left = (signal.time_remaining_frac * 300.0).max(5.0) - 5.0;
+    let cancel_after = Duration::from_secs_f64(window_secs_left.max(2.0));
     let cancel_client = client.clone();
     let cancel_order_id = order_id.clone();
     let cancel_market = signal.market_name.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(timeout).await;
+        tokio::time::sleep(cancel_after).await;
         match cancel_client.cancel_order(&cancel_order_id).await {
             Ok(_) => info!(
                 event = "ORDER_CANCELLED",
                 market = %cancel_market,
                 order_id = %cancel_order_id,
-                reason = "timeout",
+                reason = "window_end",
             ),
             Err(e) => info!(
                 event = "CANCEL_SKIPPED",
