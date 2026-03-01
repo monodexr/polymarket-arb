@@ -18,7 +18,24 @@ from web3 import Web3
 from web3.constants import MAX_INT
 from web3.middleware import ExtraDataToPOAMiddleware
 
-RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://1rpc.io/matic")
+def _find_rpc():
+    if os.environ.get("POLYGON_RPC_URL"):
+        return os.environ["POLYGON_RPC_URL"]
+    # Try pawn shop config (grep for alchemy URL)
+    import re
+    for p in ["/opt/polyscanner/config/scanner.yaml",
+              os.path.expanduser("~/Documents/Cursor/Arb-i-am/config/scanner.yaml")]:
+        try:
+            with open(p) as f:
+                for line in f:
+                    m = re.search(r'(https://polygon-mainnet\.g\.alchemy\.com/v2/\S+)', line)
+                    if m:
+                        return m.group(1).strip('"').strip("'")
+        except Exception:
+            continue
+    return "https://1rpc.io/matic"
+
+RPC_URL = _find_rpc()
 CHAIN_ID = 137
 
 USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
