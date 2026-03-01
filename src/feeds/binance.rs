@@ -6,15 +6,13 @@ use tracing::{error, info, warn};
 
 use super::PriceTick;
 
-/// Binance US combined stream for all 4 assets.
-/// Binance.com blocks US IPs (451), so we use .us as primary.
-const URL_US: &str = "wss://stream.binance.us:9443/stream?streams=btcusdt@trade/ethusdt@trade/solusdt@trade/xrpusdt@trade";
 const URL_GLOBAL: &str = "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/ethusdt@trade/solusdt@trade/xrpusdt@trade";
+const URL_US: &str = "wss://stream.binance.us:9443/stream?streams=btcusdt@trade/ethusdt@trade/solusdt@trade/xrpusdt@trade";
 
 pub fn spawn(tx: mpsc::Sender<PriceTick>) {
     tokio::spawn(async move {
         loop {
-            for url in [URL_US, URL_GLOBAL] {
+            for url in [URL_GLOBAL, URL_US] {
                 info!(url, "connecting binance WS");
                 match run(&tx, url).await {
                     Ok(()) => warn!(url, "binance WS closed, trying next"),
