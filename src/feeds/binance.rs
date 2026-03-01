@@ -1,6 +1,8 @@
+use std::time::Instant;
+
 use futures_util::StreamExt;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
@@ -31,7 +33,13 @@ pub fn spawn(tx: mpsc::Sender<PriceTick>) {
 }
 
 async fn run(tx: &mpsc::Sender<PriceTick>, url: &str) -> anyhow::Result<()> {
-    let (ws, _) = connect_async(url).await?;
+    let parsed = url::Url::parse(url)?;
+    let host = parsed.host_str().unwrap_or("stream.binance.com");
+    let port = parsed.port().unwrap_or(9443);
+    let tcp = TcpStream::connect(format!("{host}:{port}")).await?;
+    tcp.set_nodelay(true)?;
+
+    let (ws, _) = tokio_tungstenite::client_async_tls(url, tcp).await?;
     let (_write, mut read) = ws.split();
 
     let mut tick_count = 0u64;
@@ -49,7 +57,7 @@ async fn run(tx: &mpsc::Sender<PriceTick>, url: &str) -> anyhow::Result<()> {
                         "binance tick"
                     );
                 }
-                let _ = tx.send(tick).await;
+                let _ = tx.try_send(tick);
             }
         }
     }
@@ -84,5 +92,6 @@ fn parse_combined_trade(json: &str) -> Option<PriceTick> {
         source,
         price,
         timestamp_ms: ts,
+        received_at: Instant::now(),
     })
 }
