@@ -213,7 +213,7 @@ async fn run_asset_loop(
         let window = match discovery::discover_window(&asset, next_start, &cfg.discovery).await {
             Some(w) => w,
             None => {
-                data::alert("WARNING", "arb.discovery_fail",
+                data::alert("WARNING", &format!("arb.discovery_fail.{}", asset),
                     &format!("Failed to discover {} window {}", asset, next_start),
                     serde_json::json!({"asset": asset, "window_start": next_start}));
                 continue;
@@ -263,7 +263,7 @@ async fn run_asset_loop(
             "window opened"
         );
 
-        data::alert("INFO", "arb.window_open",
+        data::alert("INFO", &format!("arb.window_open.{}", asset),
             &format!("{} window opened: {} @ ${:.2}", asset.to_uppercase(), window.slug, open_price),
             serde_json::json!({
                 "asset": asset, "slug": window.slug,
@@ -364,7 +364,7 @@ async fn run_asset_loop(
 
         let resolved = if move_pct > 0.0 { "UP" } else if move_pct < 0.0 { "DOWN" } else { "FLAT" };
 
-        data::alert("INFO", "arb.window_summary",
+        data::alert("INFO", &format!("arb.window_summary.{}", asset),
             &format!("{} window: move {:.3}%, fair_yes={:.2}, clob_yes={:.2}, resolved={}",
                 asset.to_uppercase(), move_pct * 100.0, fv_yes_close, yes_mid_close, resolved),
             serde_json::json!({
