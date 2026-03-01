@@ -113,6 +113,10 @@ pub fn evaluate(
             continue;
         }
 
+        if fv_yes < 0.30 || fv_yes > 0.70 {
+            continue;
+        }
+
         let yes_edge = fv_yes - yes_mid;
         let no_edge = fv_no - no_mid;
 
@@ -132,6 +136,10 @@ pub fn evaluate(
         };
 
         if edge > 0.15 {
+            continue;
+        }
+
+        if (fair - clob_mid).abs() > 0.15 {
             continue;
         }
 
