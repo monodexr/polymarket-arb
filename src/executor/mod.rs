@@ -6,8 +6,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::auth::{LocalSigner, Normal, Signer};
+use std::collections::HashSet;
+
 use polymarket_client_sdk::clob::types::{
-    AssetType, Side, SignableOrder, SignatureType, SignedOrder,
+    AssetType, Side, SignableOrder, SignatureType, SignedOrder, TickSize,
 };
 use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
 use polymarket_client_sdk::clob::{Client, Config as ClobConfig};
@@ -84,11 +86,20 @@ pub async fn spawn(
     });
 
     let mut positions = positions::PositionTracker::new();
+    let mut warmed_tokens: HashSet<String> = HashSet::new();
 
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
                 DivEvent::Signal(signal) => {
+                    if !warmed_tokens.contains(&signal.token_id) {
+                        if let Ok(tid) = U256::from_str(&signal.token_id) {
+                            client.set_tick_size(tid, TickSize::Hundredth);
+                            client.set_neg_risk(tid, false);
+                            client.set_fee_rate_bps(tid, 0);
+                            warmed_tokens.insert(signal.token_id.clone());
+                        }
+                    }
                     {
                         let mut stats = live_stats.lock().unwrap();
                         stats.open += 1;
