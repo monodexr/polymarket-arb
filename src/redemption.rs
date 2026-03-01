@@ -95,6 +95,9 @@ impl Redeemer {
                             results.push(RedemptionResult {
                                 condition_id: cid.clone(),
                                 market_name: pos.market_name.clone(),
+                                side: pos.side.clone(),
+                                entry_price: pos.entry_price,
+                                size_usd: pos.size_usd,
                                 won,
                                 tx_hash,
                             });
@@ -245,6 +248,9 @@ fn normalize_condition_id(cid: &str) -> String {
 pub struct RedemptionResult {
     pub condition_id: String,
     pub market_name: String,
+    pub side: String,
+    pub entry_price: f64,
+    pub size_usd: f64,
     pub won: bool,
     pub tx_hash: String,
 }
@@ -265,13 +271,48 @@ pub fn spawn_redemption_loop(
             if redeemer.pending_count() > 0 {
                 let results = redeemer.process_pending().await;
                 for r in &results {
-                    let mut stats = live_stats.lock().unwrap();
-                    stats.open = stats.open.saturating_sub(1);
-                    if r.won {
-                        stats.wins += 1;
+                    let pnl = if r.won {
+                        r.size_usd * (1.0 / r.entry_price - 1.0)
                     } else {
-                        stats.losses += 1;
+                        -r.size_usd
+                    };
+                    let exit_price = if r.won { 1.0 } else { 0.0 };
+                    let outcome = if r.won { "converged" } else { "adverse" };
+
+                    {
+                        let mut stats = live_stats.lock().unwrap();
+                        stats.open = stats.open.saturating_sub(1);
+                        stats.total_pnl += pnl;
+                        stats.session_pnl += pnl;
+                        stats.daily_pnl += pnl;
+                        if r.won { stats.wins += 1; } else { stats.losses += 1; }
                     }
+
+                    let category = if r.won { "arb.converge" } else { "arb.adverse" };
+                    let emoji = if r.won { "WIN" } else { "LOSS" };
+                    crate::data::alert(
+                        if r.won { "INFO" } else { "WARNING" },
+                        category,
+                        &format!("{} {} on {} — ${:.2} ({})", emoji, r.side, r.market_name, pnl, r.tx_hash.get(..10).unwrap_or(&r.tx_hash)),
+                        serde_json::json!({
+                            "market": r.market_name, "won": r.won, "pnl": pnl,
+                            "entry_price": r.entry_price, "exit_price": exit_price,
+                            "side": r.side, "tx_hash": r.tx_hash,
+                        }),
+                    );
+
+                    crate::data::write_trade(&crate::data::TradeRecord {
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),
+                        market: r.market_name.clone(),
+                        side: r.side.clone(),
+                        entry_price: r.entry_price,
+                        exit_price,
+                        edge_pct: 0.0,
+                        pnl,
+                        duration_sec: 0.0,
+                        outcome: outcome.to_string(),
+                    });
                 }
 
                 if !results.is_empty() {
