@@ -18,7 +18,7 @@ from web3 import Web3
 from web3.constants import MAX_INT
 from web3.middleware import ExtraDataToPOAMiddleware
 
-RPC_URL = "https://polygon-rpc.com"
+RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://1rpc.io/matic")
 CHAIN_ID = 137
 
 USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
