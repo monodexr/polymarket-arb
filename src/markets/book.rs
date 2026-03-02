@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Default)]
@@ -16,9 +17,11 @@ pub struct TokenBook {
 pub type BookSnapshot = HashMap<String, TokenBook>;
 pub type BookRx = watch::Receiver<BookSnapshot>;
 
-/// Channel for sending new token IDs to subscribe to (per window cycle).
 pub type TokenSubTx = mpsc::Sender<Vec<String>>;
 pub type TokenSubRx = mpsc::Receiver<Vec<String>>;
+
+const CLOB_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+const CLOB_WS_HOST: &str = "ws-subscriptions-clob.polymarket.com:443";
 
 pub fn spawn() -> (BookRx, TokenSubTx) {
     let (book_tx, book_rx) = watch::channel(BookSnapshot::new());
@@ -32,97 +35,120 @@ pub fn spawn() -> (BookRx, TokenSubTx) {
 }
 
 async fn run_loop(book_tx: watch::Sender<BookSnapshot>, mut token_rx: TokenSubRx) {
-    let mut current_tokens: HashSet<String> = HashSet::new();
+    let mut subscribed_tokens: HashSet<String> = HashSet::new();
 
     loop {
-        // Wait for at least one token subscription
-        let first = match token_rx.recv().await {
-            Some(t) => t,
-            None => break,
+        let ws = match connect_ws().await {
+            Ok(ws) => ws,
+            Err(e) => {
+                error!(%e, "CLOB WS connection failed, retrying in 2s");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
         };
 
-        // Drain all pending subscriptions (other assets may have queued theirs
-        // within milliseconds of the first). Wait 500ms for stragglers.
-        let mut all_new: HashSet<String> = first.into_iter().collect();
-        loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                token_rx.recv(),
-            )
-            .await
-            {
-                Ok(Some(more)) => {
-                    all_new.extend(more);
+        let (mut write, mut read) = ws.split();
+
+        let write = Arc::new(tokio::sync::Mutex::new(write));
+        let write_ping = write.clone();
+        let ping_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let mut w = write_ping.lock().await;
+                if w.send(Message::Ping(vec![].into())).await.is_err() {
+                    break;
                 }
-                _ => break,
+            }
+        });
+
+        if !subscribed_tokens.is_empty() {
+            let ids: Vec<String> = subscribed_tokens.iter().cloned().collect();
+            if let Err(e) = subscribe(&write, &ids).await {
+                error!(%e, "failed to resubscribe existing tokens");
+            } else {
+                info!(tokens = ids.len(), "resubscribed existing tokens on reconnect");
             }
         }
 
-        // Merge with existing tokens (keep subscriptions from other active windows)
-        current_tokens.extend(all_new);
+        let mut ws_alive = true;
 
-        if current_tokens.is_empty() {
-            continue;
+        while ws_alive {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            process_clob_message(&text, &book_tx);
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            warn!(%e, "CLOB WS read error, reconnecting");
+                            ws_alive = false;
+                        }
+                        None => {
+                            warn!("CLOB WS closed, reconnecting");
+                            ws_alive = false;
+                        }
+                    }
+                }
+                new_tokens = token_rx.recv() => {
+                    match new_tokens {
+                        Some(tokens) => {
+                            let new: Vec<String> = tokens.into_iter()
+                                .filter(|t| !subscribed_tokens.contains(t))
+                                .collect();
+                            if new.is_empty() {
+                                continue;
+                            }
+                            info!(new_tokens = new.len(), total = subscribed_tokens.len() + new.len(), "subscribing new tokens");
+                            if let Err(e) = subscribe(&write, &new).await {
+                                warn!(%e, "failed to subscribe new tokens, reconnecting");
+                                ws_alive = false;
+                            } else {
+                                subscribed_tokens.extend(new);
+                            }
+                        }
+                        None => {
+                            info!("token subscription channel closed");
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
-        let ids: Vec<String> = current_tokens.iter().cloned().collect();
-        info!(tokens = ids.len(), "subscribing to CLOB WS");
-
-        match run_ws(&ids, &book_tx).await {
-            Ok(()) => warn!("CLOB WS closed, will resubscribe on next window"),
-            Err(e) => error!(%e, "CLOB WS error"),
-        }
-
+        ping_task.abort();
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
-async fn run_ws(
-    token_ids: &[String],
-    book_tx: &watch::Sender<BookSnapshot>,
-) -> anyhow::Result<()> {
-    let clob_ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
-    let tcp = tokio::net::TcpStream::connect("ws-subscriptions-clob.polymarket.com:443").await?;
+async fn connect_ws() -> anyhow::Result<tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
+>> {
+    let tcp = tokio::net::TcpStream::connect(CLOB_WS_HOST).await?;
     tcp.set_nodelay(true)?;
-    let (ws, _) = tokio_tungstenite::client_async_tls(clob_ws_url, tcp).await?;
-    let (mut write, mut read) = ws.split();
+    let (ws, _) = tokio_tungstenite::client_async_tls(CLOB_WS_URL, tcp).await?;
+    info!("CLOB WS connected");
+    Ok(ws)
+}
 
+type WsWrite = Arc<tokio::sync::Mutex<
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
+        >,
+        Message
+    >
+>>;
+
+async fn subscribe(write: &WsWrite, token_ids: &[String]) -> anyhow::Result<()> {
     let sub_msg = serde_json::json!({
         "assets_ids": token_ids,
         "type": "market",
         "custom_feature_enabled": true
     });
-
-    use futures_util::SinkExt;
-    use tokio_tungstenite::tungstenite::Message;
-    write
-        .send(Message::Text(sub_msg.to_string().into()))
-        .await?;
-
-    let write = Arc::new(tokio::sync::Mutex::new(write));
-    let write_ping = write.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            let mut w = write_ping.lock().await;
-            if w.send(Message::Ping(vec![].into())).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut msg_count: u64 = 0;
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if let Message::Text(text) = msg {
-            msg_count += 1;
-            if msg_count <= 3 {
-                info!(msg_num = msg_count, len = text.len(), "CLOB WS raw message: {}", &text[..text.len().min(500)]);
-            }
-            process_clob_message(&text, book_tx);
-        }
-    }
-
+    let mut w = write.lock().await;
+    w.send(Message::Text(sub_msg.to_string().into())).await?;
+    info!(tokens = token_ids.len(), "CLOB WS subscription sent");
     Ok(())
 }
 
@@ -144,15 +170,9 @@ fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
         .unwrap()
         .as_millis() as u64;
 
-    static BOOK_LOG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
     match event_type {
         "book" | "price_change" => {
             if let Some(book) = parse_book_update(&v, now_ms) {
-                let n = BOOK_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n < 5 {
-                    info!(event = event_type, asset = asset_id, mid = %format!("{:.4}", book.mid), bid = %format!("{:.4}", book.best_bid), ask = %format!("{:.4}", book.best_ask), "book update parsed");
-                }
                 book_tx.send_modify(|snap| {
                     snap.insert(asset_id.to_string(), book);
                 });
@@ -160,10 +180,6 @@ fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
         }
         "best_bid_ask" => {
             if let Some((bid, ask)) = parse_best_bid_ask(&v) {
-                let n = BOOK_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n < 5 {
-                    info!(event = "best_bid_ask", asset = asset_id, bid = %format!("{:.4}", bid), ask = %format!("{:.4}", ask), "bba update parsed");
-                }
                 book_tx.send_modify(|snap| {
                     let entry = snap.entry(asset_id.to_string()).or_default();
                     entry.best_bid = bid;
@@ -173,13 +189,7 @@ fn process_clob_message(json: &str, book_tx: &watch::Sender<BookSnapshot>) {
                 });
             }
         }
-        _ => {
-            static UNK_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let n = UNK_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 3 {
-                info!(event_type = event_type, "CLOB WS unknown event type");
-            }
-        }
+        _ => {}
     }
 }
 
