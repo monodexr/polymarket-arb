@@ -43,25 +43,33 @@ async fn run(tx: &mpsc::Sender<PriceTick>, url: &str) -> anyhow::Result<()> {
     let (_write, mut read) = ws.split();
 
     let mut tick_count = 0u64;
+    let stale_timeout = std::time::Duration::from_secs(15);
 
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if let Message::Text(text) = msg {
-            if let Some(tick) = parse_combined_trade(&text) {
-                tick_count += 1;
-                if tick_count == 1 || tick_count % 1000 == 0 {
-                    info!(
-                        source = tick.source,
-                        price = %format!("{:.2}", tick.price),
-                        total_ticks = tick_count,
-                        "binance tick"
-                    );
+    loop {
+        match tokio::time::timeout(stale_timeout, read.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let Some(tick) = parse_combined_trade(&text) {
+                    tick_count += 1;
+                    if tick_count == 1 || tick_count % 1000 == 0 {
+                        info!(
+                            source = tick.source,
+                            price = %format!("{:.2}", tick.price),
+                            total_ticks = tick_count,
+                            "binance tick"
+                        );
+                    }
+                    let _ = tx.try_send(tick);
                 }
-                let _ = tx.try_send(tick);
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(None) => return Ok(()),
+            Err(_) => {
+                warn!("binance WS stale (no message for 15s), reconnecting");
+                return Ok(());
             }
         }
     }
-    Ok(())
 }
 
 /// Parse combined stream format: {"stream":"btcusdt@trade","data":{...}}
