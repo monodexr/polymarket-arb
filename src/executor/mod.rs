@@ -64,21 +64,34 @@ pub async fn spawn(
 
     let bal_client = client.clone();
     let bal_stats = live_stats.clone();
+    let bal_eoa = signer.address().to_string();
     tokio::spawn(async move {
+        let http = reqwest::Client::new();
         let mut first = true;
+        let mut last_known = 0.0_f64;
         loop {
-            match query_balance(&bal_client).await {
-                Ok(bal) => {
-                    let mut stats = bal_stats.lock().unwrap();
-                    stats.balance = bal;
-                    if first {
-                        stats.session_start_balance = bal;
-                        first = false;
-                        info!(balance = %format!("${:.2}", bal), "initial CLOB balance");
+            let bal = match query_balance(&bal_client).await {
+                Ok(b) if b > 0.0 => b,
+                Ok(_) | Err(_) => {
+                    match query_rpc_usdc_balance(&http, &bal_eoa).await {
+                        Ok(b) if b > 0.0 => {
+                            info!(balance = %format!("${:.2}", b), "balance via RPC fallback");
+                            b
+                        }
+                        _ => last_known,
                     }
                 }
-                Err(e) => {
-                    warn!(%e, "CLOB balance query failed");
+            };
+            if bal > 0.0 {
+                last_known = bal;
+            }
+            {
+                let mut stats = bal_stats.lock().unwrap();
+                stats.balance = bal;
+                if first && bal > 0.0 {
+                    stats.session_start_balance = bal;
+                    first = false;
+                    info!(balance = %format!("${:.2}", bal), "initial balance");
                 }
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -134,6 +147,33 @@ pub async fn spawn(
     });
 
     Ok(())
+}
+
+const USDC_E: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+
+async fn query_rpc_usdc_balance(http: &reqwest::Client, wallet: &str) -> Result<f64> {
+    let rpc_url = std::env::var("POLYGON_RPC_URL")
+        .unwrap_or_else(|_| "https://1rpc.io/matic".to_string());
+    let addr_clean = wallet.trim_start_matches("0x");
+    let data = format!("0x70a08231{:0>64}", addr_clean);
+    let resp = http.post(&rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [{"to": USDC_E, "data": data}, "latest"],
+            "id": 1
+        }))
+        .send()
+        .await
+        .context("RPC balance request")?;
+    let body: serde_json::Value = resp.json().await?;
+    let hex = body["result"].as_str().unwrap_or("0x0");
+    let clean = hex.trim_start_matches("0x");
+    if clean.is_empty() || clean.chars().all(|c| c == '0') {
+        return Ok(0.0);
+    }
+    let raw = u128::from_str_radix(&clean[clean.len().saturating_sub(16)..], 16).unwrap_or(0);
+    Ok(raw as f64 / 1e6)
 }
 
 async fn query_balance(client: &AuthClient) -> Result<f64> {
